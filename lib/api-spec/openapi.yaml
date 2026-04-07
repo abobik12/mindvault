@@ -3,13 +3,25 @@ info:
   # Do not change the title, if the title changes, the import paths will be broken
   title: Api
   version: 0.1.0
-  description: API specification
+  description: MindVault AI Personal Workspace API
 servers:
   - url: /api
     description: Base API path
 tags:
   - name: health
     description: Health operations
+  - name: auth
+    description: Authentication operations
+  - name: folders
+    description: Folder management
+  - name: items
+    description: Universal items (notes, files, reminders)
+  - name: gemini
+    description: Gemini AI chat and classification operations
+  - name: search
+    description: Search and filter operations
+  - name: stats
+    description: Workspace statistics and summaries
 paths:
   /healthz:
     get:
@@ -24,6 +36,661 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/HealthStatus"
+
+  # Auth
+  /auth/register:
+    post:
+      operationId: register
+      tags: [auth]
+      summary: Register a new user
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/RegisterBody"
+      responses:
+        "201":
+          description: Registered user with token
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AuthResponse"
+        "400":
+          description: Bad request
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "409":
+          description: Email already in use
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /auth/login:
+    post:
+      operationId: login
+      tags: [auth]
+      summary: Login with email and password
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/LoginBody"
+      responses:
+        "200":
+          description: Auth token and user
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AuthResponse"
+        "401":
+          description: Invalid credentials
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /auth/me:
+    get:
+      operationId: getMe
+      tags: [auth]
+      summary: Get current user profile
+      responses:
+        "200":
+          description: Current user
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/User"
+        "401":
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /auth/me/profile:
+    patch:
+      operationId: updateProfile
+      tags: [auth]
+      summary: Update current user's profile
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/UpdateProfileBody"
+      responses:
+        "200":
+          description: Updated user
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/User"
+        "401":
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  # Folders
+  /folders:
+    get:
+      operationId: listFolders
+      tags: [folders]
+      summary: List all folders for the current user
+      responses:
+        "200":
+          description: List of folders
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/Folder"
+        "401":
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+    post:
+      operationId: createFolder
+      tags: [folders]
+      summary: Create a new folder
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateFolderBody"
+      responses:
+        "201":
+          description: Created folder
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Folder"
+        "401":
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /folders/{id}:
+    get:
+      operationId: getFolder
+      tags: [folders]
+      summary: Get a folder by ID
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+      responses:
+        "200":
+          description: Folder
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Folder"
+        "404":
+          description: Not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+    patch:
+      operationId: updateFolder
+      tags: [folders]
+      summary: Update a folder
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/UpdateFolderBody"
+      responses:
+        "200":
+          description: Updated folder
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Folder"
+        "404":
+          description: Not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+    delete:
+      operationId: deleteFolder
+      tags: [folders]
+      summary: Delete a folder
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+      responses:
+        "204":
+          description: Deleted
+        "404":
+          description: Not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  # Items (notes, files, reminders)
+  /items:
+    get:
+      operationId: listItems
+      tags: [items]
+      summary: List items with optional filters
+      parameters:
+        - name: type
+          in: query
+          schema:
+            type: string
+            enum: [note, file, reminder]
+        - name: folderId
+          in: query
+          schema:
+            type: ["integer", "null"]
+        - name: status
+          in: query
+          schema:
+            type: string
+            enum: [active, archived, completed]
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            default: 50
+        - name: offset
+          in: query
+          schema:
+            type: integer
+            default: 0
+      responses:
+        "200":
+          description: List of items
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/Item"
+        "401":
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+    post:
+      operationId: createItem
+      tags: [items]
+      summary: Create a new item
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateItemBody"
+      responses:
+        "201":
+          description: Created item
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Item"
+        "400":
+          description: Bad request
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "401":
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /items/{id}:
+    get:
+      operationId: getItem
+      tags: [items]
+      summary: Get an item by ID
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+      responses:
+        "200":
+          description: Item
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Item"
+        "404":
+          description: Not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+    patch:
+      operationId: updateItem
+      tags: [items]
+      summary: Update an item
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/UpdateItemBody"
+      responses:
+        "200":
+          description: Updated item
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Item"
+        "404":
+          description: Not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+    delete:
+      operationId: deleteItem
+      tags: [items]
+      summary: Delete an item
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+      responses:
+        "204":
+          description: Deleted
+        "404":
+          description: Not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /items/upload:
+    post:
+      operationId: uploadFile
+      tags: [items]
+      summary: Upload a file and create a file item
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/UploadFileBody"
+      responses:
+        "201":
+          description: Created file item
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Item"
+        "400":
+          description: Bad request
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "401":
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  # AI chat (Gemini-powered)
+  /gemini/conversations:
+    get:
+      operationId: listGeminiConversations
+      tags: [gemini]
+      summary: List all conversations
+      responses:
+        "200":
+          description: List of conversations
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/GeminiConversation"
+    post:
+      operationId: createGeminiConversation
+      tags: [gemini]
+      summary: Create a new conversation
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateGeminiConversationBody"
+      responses:
+        "201":
+          description: Created conversation
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GeminiConversation"
+
+  /gemini/conversations/{id}:
+    get:
+      operationId: getGeminiConversation
+      tags: [gemini]
+      summary: Get conversation with messages
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+      responses:
+        "200":
+          description: Conversation with messages
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GeminiConversationWithMessages"
+        "404":
+          description: Not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GeminiError"
+    delete:
+      operationId: deleteGeminiConversation
+      tags: [gemini]
+      summary: Delete a conversation
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+      responses:
+        "204":
+          description: Deleted
+        "404":
+          description: Not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GeminiError"
+
+  /gemini/conversations/{id}/messages:
+    get:
+      operationId: listGeminiMessages
+      tags: [gemini]
+      summary: List messages in a conversation
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+      responses:
+        "200":
+          description: List of messages
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/GeminiMessage"
+    post:
+      operationId: sendGeminiMessage
+      tags: [gemini]
+      summary: Send a message and receive AI response (SSE stream)
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/SendGeminiMessageBody"
+      responses:
+        "200":
+          description: SSE stream of assistant response chunks
+          content:
+            text/event-stream: {}
+
+  /gemini/classify:
+    post:
+      operationId: classifyContent
+      tags: [gemini]
+      summary: Classify content and auto-save as item
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ClassifyContentBody"
+      responses:
+        "200":
+          description: Classification result with optional saved item
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ClassifyContentResponse"
+        "401":
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  # Search
+  /search:
+    get:
+      operationId: searchItems
+      tags: [search]
+      summary: Search items by query
+      parameters:
+        - name: q
+          in: query
+          required: true
+          schema:
+            type: string
+        - name: type
+          in: query
+          schema:
+            type: string
+            enum: [note, file, reminder]
+        - name: folderId
+          in: query
+          schema:
+            type: ["integer", "null"]
+      responses:
+        "200":
+          description: Search results
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/Item"
+        "401":
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  # Stats
+  /stats/workspace:
+    get:
+      operationId: getWorkspaceStats
+      tags: [stats]
+      summary: Get workspace overview stats
+      responses:
+        "200":
+          description: Workspace stats
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/WorkspaceStats"
+        "401":
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /stats/recent:
+    get:
+      operationId: getRecentItems
+      tags: [stats]
+      summary: Get recently created/modified items
+      parameters:
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            default: 10
+      responses:
+        "200":
+          description: Recent items
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/Item"
+        "401":
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /stats/reminders/upcoming:
+    get:
+      operationId: getUpcomingReminders
+      tags: [stats]
+      summary: Get upcoming reminders sorted by date
+      parameters:
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            default: 5
+      responses:
+        "200":
+          description: Upcoming reminders
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/Item"
+        "401":
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
 components:
   schemas:
     HealthStatus:
@@ -34,3 +701,417 @@ components:
       required:
         - status
 
+    ErrorResponse:
+      type: object
+      properties:
+        error:
+          type: string
+      required:
+        - error
+
+    # Auth schemas
+    RegisterBody:
+      type: object
+      properties:
+        email:
+          type: string
+          format: email
+        password:
+          type: string
+          minLength: 6
+        fullName:
+          type: string
+      required:
+        - email
+        - password
+        - fullName
+
+    LoginBody:
+      type: object
+      properties:
+        email:
+          type: string
+          format: email
+        password:
+          type: string
+      required:
+        - email
+        - password
+
+    AuthResponse:
+      type: object
+      properties:
+        token:
+          type: string
+        user:
+          $ref: "#/components/schemas/User"
+      required:
+        - token
+        - user
+
+    User:
+      type: object
+      properties:
+        id:
+          type: integer
+        email:
+          type: string
+        fullName:
+          type: string
+        avatarUrl:
+          type: ["string", "null"]
+        createdAt:
+          type: string
+          format: date-time
+      required:
+        - id
+        - email
+        - fullName
+        - createdAt
+
+    UpdateProfileBody:
+      type: object
+      properties:
+        fullName:
+          type: string
+        avatarUrl:
+          type: ["string", "null"]
+
+    # Folder schemas
+    Folder:
+      type: object
+      properties:
+        id:
+          type: integer
+        userId:
+          type: integer
+        name:
+          type: string
+        color:
+          type: ["string", "null"]
+        icon:
+          type: ["string", "null"]
+        isSystem:
+          type: boolean
+        itemCount:
+          type: integer
+        createdAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
+      required:
+        - id
+        - userId
+        - name
+        - isSystem
+        - itemCount
+        - createdAt
+        - updatedAt
+
+    CreateFolderBody:
+      type: object
+      properties:
+        name:
+          type: string
+        color:
+          type: ["string", "null"]
+        icon:
+          type: ["string", "null"]
+      required:
+        - name
+
+    UpdateFolderBody:
+      type: object
+      properties:
+        name:
+          type: string
+        color:
+          type: ["string", "null"]
+        icon:
+          type: ["string", "null"]
+
+    # Item schemas
+    Item:
+      type: object
+      properties:
+        id:
+          type: integer
+        userId:
+          type: integer
+        folderId:
+          type: ["integer", "null"]
+        folderName:
+          type: ["string", "null"]
+        type:
+          type: string
+          enum: [note, file, reminder]
+        title:
+          type: string
+        content:
+          type: ["string", "null"]
+        summary:
+          type: ["string", "null"]
+        originalFilename:
+          type: ["string", "null"]
+        mimeType:
+          type: ["string", "null"]
+        fileSize:
+          type: ["integer", "null"]
+        fileData:
+          type: ["string", "null"]
+        reminderAt:
+          type: ["string", "null"]
+          format: date-time
+        status:
+          type: string
+          enum: [active, archived, completed]
+        aiCategory:
+          type: ["string", "null"]
+        aiTags:
+          type: array
+          items:
+            type: string
+        aiConfidence:
+          type: ["number", "null"]
+        createdAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
+      required:
+        - id
+        - userId
+        - type
+        - title
+        - status
+        - aiTags
+        - createdAt
+        - updatedAt
+
+    CreateItemBody:
+      type: object
+      properties:
+        type:
+          type: string
+          enum: [note, file, reminder]
+        title:
+          type: string
+        content:
+          type: ["string", "null"]
+        folderId:
+          type: ["integer", "null"]
+        reminderAt:
+          type: ["string", "null"]
+      required:
+        - type
+        - title
+
+    UpdateItemBody:
+      type: object
+      properties:
+        title:
+          type: string
+        content:
+          type: ["string", "null"]
+        folderId:
+          type: ["integer", "null"]
+        reminderAt:
+          type: ["string", "null"]
+        status:
+          type: string
+          enum: [active, archived, completed]
+
+    UploadFileBody:
+      type: object
+      properties:
+        filename:
+          type: string
+        mimeType:
+          type: string
+        fileData:
+          type: string
+          description: Base64-encoded file data
+        fileSize:
+          type: integer
+        folderId:
+          type: ["integer", "null"]
+      required:
+        - filename
+        - mimeType
+        - fileData
+        - fileSize
+
+    # AI classification schemas
+    ClassifyContentBody:
+      type: object
+      properties:
+        content:
+          type: string
+        conversationId:
+          type: ["integer", "null"]
+          description: Optional conversation context
+      required:
+        - content
+
+    ClassifyContentResponse:
+      type: object
+      properties:
+        type:
+          type: string
+          enum: [note, reminder, file, chat]
+        title:
+          type: ["string", "null"]
+        summary:
+          type: ["string", "null"]
+        cleanedContent:
+          type: ["string", "null"]
+        suggestedFolder:
+          type: ["string", "null"]
+        tags:
+          type: array
+          items:
+            type: string
+        confidence:
+          type: number
+        reminderAt:
+          type: ["string", "null"]
+        savedItem:
+          nullable: true
+          $ref: "#/components/schemas/Item"
+        message:
+          type: string
+      required:
+        - type
+        - tags
+        - confidence
+        - message
+
+    # Workspace stats
+    WorkspaceStats:
+      type: object
+      properties:
+        totalItems:
+          type: integer
+        totalNotes:
+          type: integer
+        totalFiles:
+          type: integer
+        totalReminders:
+          type: integer
+        totalFolders:
+          type: integer
+        pendingReminders:
+          type: integer
+        totalConversations:
+          type: integer
+      required:
+        - totalItems
+        - totalNotes
+        - totalFiles
+        - totalReminders
+        - totalFolders
+        - pendingReminders
+        - totalConversations
+
+    # Gemini chat schemas
+    GeminiConversation:
+      type: object
+      properties:
+        id:
+          type: integer
+        title:
+          type: string
+        createdAt:
+          type: string
+          format: date-time
+      required:
+        - id
+        - title
+        - createdAt
+
+    GeminiMessage:
+      type: object
+      properties:
+        id:
+          type: integer
+        conversationId:
+          type: integer
+        role:
+          type: string
+        content:
+          type: string
+        createdAt:
+          type: string
+          format: date-time
+      required:
+        - id
+        - conversationId
+        - role
+        - content
+        - createdAt
+
+    CreateGeminiConversationBody:
+      type: object
+      properties:
+        title:
+          type: string
+      required:
+        - title
+
+    SendGeminiMessageBody:
+      type: object
+      properties:
+        content:
+          type: string
+      required:
+        - content
+
+    GeminiConversationWithMessages:
+      type: object
+      properties:
+        id:
+          type: integer
+        title:
+          type: string
+        createdAt:
+          type: string
+          format: date-time
+        messages:
+          type: array
+          items:
+            $ref: "#/components/schemas/GeminiMessage"
+      required:
+        - id
+        - title
+        - createdAt
+        - messages
+
+    GenerateGeminiImageBody:
+      type: object
+      properties:
+        prompt:
+          type: string
+      required:
+        - prompt
+
+    GenerateGeminiImageResponse:
+      type: object
+      properties:
+        b64_json:
+          type: string
+        mimeType:
+          type: string
+      required:
+        - b64_json
+        - mimeType
+
+    GeminiError:
+      type: object
+      properties:
+        error:
+          type: string
+      required:
+        - error
