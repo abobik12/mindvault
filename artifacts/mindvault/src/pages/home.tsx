@@ -12,7 +12,7 @@ import { useQueryClient } from "@tanstack/react-query";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
 import { ScrollArea } from "@/components/ui/scroll-area";
-import { Send, Plus, Paperclip, Loader2, Bot, User, Trash2, Folder as FolderIcon, Bell, FileText } from "lucide-react";
+import { Send, Plus, Paperclip, Loader2, Bot, User, Trash2, Folder as FolderIcon, Bell, FileText, MessageSquare } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { toast } from "sonner";
 import { format } from "date-fns";
