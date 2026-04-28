@@ -18,7 +18,7 @@ import {
   getCurrentMoscowDateTimeForModel,
   parseReminderDateTime,
 } from "../lib/time";
-import { buildAssistantContext, formatContextForPrompt } from "../lib/ai-context";
+import { buildAssistantContext, formatContextForPrompt, type UserContextData } from "../lib/ai-context";
 
 const router: IRouter = Router();
 const OPENAI_TEXT_MODEL = process.env.OPENAI_MODEL || "gpt-4.1-mini";
@@ -200,8 +200,49 @@ async function tryHandleMoveLatestAction({
   };
 }
 
-function buildOfflineAssistantReply(userMessage: string, reason?: string): string {
+function buildOfflineContextSummary(context?: UserContextData): string | null {
+  if (!context) return null;
+
+  const lines: string[] = [];
+  if (context.relevantSources.length > 0) {
+    lines.push("Я нашел в ваших сохраненных данных:");
+    for (const source of context.relevantSources.slice(0, 10)) {
+      const folder = source.folder ? `, папка: ${source.folder}` : "";
+      lines.push(`- [${source.type}] ${source.title}${folder}`);
+    }
+    return lines.join("\n");
+  }
+
+  if (context.queryIntent === "notes" && context.recentNotes.length > 0) {
+    lines.push("Ваши заметки:");
+    for (const note of context.recentNotes.slice(0, 10)) lines.push(`- ${note.title} (${note.folder})`);
+    return lines.join("\n");
+  }
+
+  if (context.queryIntent === "files" && context.recentFiles.length > 0) {
+    lines.push("Ваши файлы:");
+    for (const file of context.recentFiles.slice(0, 10)) lines.push(`- ${file.filename} (${file.folder}, ${file.size})`);
+    return lines.join("\n");
+  }
+
+  if (context.queryIntent === "folders" && context.folders.length > 0) {
+    lines.push("Ваши папки:");
+    for (const folder of context.folders.slice(0, 20)) lines.push(`- ${folder.name} (${folder.itemCount} объектов)`);
+    return lines.join("\n");
+  }
+
+  if (context.queryIntent === "reminders" && context.upcomingReminders.length > 0) {
+    lines.push("Ваши напоминания:");
+    for (const reminder of context.upcomingReminders.slice(0, 10)) lines.push(`- ${reminder.title}: ${reminder.dueDate}`);
+    return lines.join("\n");
+  }
+
+  return null;
+}
+
+function buildOfflineAssistantReply(userMessage: string, reason?: string, context?: UserContextData): string {
   const trimmed = userMessage.trim();
+  const contextSummary = buildOfflineContextSummary(context);
   const isQuotaError =
     typeof reason === "string" &&
     (reason.includes("insufficient_quota") || reason.toLowerCase().includes("quota"));
@@ -214,6 +255,8 @@ function buildOfflineAssistantReply(userMessage: string, reason?: string): strin
       "- пополнить баланс/включить биллинг у провайдера;",
       "- или указать другой ключ/провайдер в `OPENROUTER_API_KEY` / `OPENAI_API_KEY`.",
       "",
+      contextSummary ?? "В сохраненных данных я не нашел ничего похожего.",
+      "",
       `Ваш запрос: **${trimmed || "пустой запрос"}**`,
     ].join("\n");
   }
@@ -224,6 +267,8 @@ function buildOfflineAssistantReply(userMessage: string, reason?: string): strin
 
   return [
     "Сейчас не удалось получить ответ от AI-провайдера, поэтому включен офлайн-режим.",
+    "",
+    contextSummary ?? "В сохраненных данных я не нашел ничего похожего.",
     "",
     `Ваш запрос: **${trimmed}**`,
     "",
@@ -433,20 +478,30 @@ router.post("/gemini/conversations/:id/messages", requireAuth, async (req, res):
     return;
   }
 
-  try {
-    // Build user context from saved data
-    const userContext = await buildAssistantContext(
-      req.auth!.userId,
-      bodyParsed.data.content,
-      conversation.id,
-      {
-        maxRecentItems: 8,
-        maxSearchResults: 20,
-        includeArchived: false,
-      },
-    );
+  const userContext = await buildAssistantContext(
+    req.auth!.userId,
+    bodyParsed.data.content,
+    conversation.id,
+    {
+      maxRecentItems: 12,
+      maxSearchResults: 20,
+      includeArchived: false,
+    },
+  );
 
-    const contextForPrompt = formatContextForPrompt(userContext);
+  const contextForPrompt = formatContextForPrompt(userContext);
+  logger.info(
+    {
+      userId: req.auth!.userId,
+      conversationId: conversation.id,
+      promptContextChars: contextForPrompt.length,
+      relevantCount: userContext.relevantSources.length,
+      queryIntent: userContext.queryIntent,
+    },
+    "[assistant-context] attached context to AI prompt",
+  );
+
+  try {
     const systemPromptWithContext = systemPrompt + contextForPrompt;
 
     const contentsForGemini = [
@@ -506,7 +561,7 @@ router.post("/gemini/conversations/:id/messages", requireAuth, async (req, res):
 
     const errorMessage =
       err instanceof Error ? err.message : typeof err === "string" ? err : undefined;
-    const fallbackResponse = buildOfflineAssistantReply(bodyParsed.data.content, errorMessage);
+    const fallbackResponse = buildOfflineAssistantReply(bodyParsed.data.content, errorMessage, userContext);
     await db.insert(messages).values({
       conversationId: conversation.id,
       role: "assistant",

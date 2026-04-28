@@ -1,8 +1,9 @@
-import { and, desc, eq, inArray, sql } from "drizzle-orm";
+import { and, desc, eq, inArray } from "drizzle-orm";
 import { conversations, db, foldersTable, itemsTable, messages, type Item } from "@workspace/db";
 import { logger } from "./logger";
 
 type SourceType = "folder" | "note" | "file" | "reminder" | "message";
+type QueryIntent = "notes" | "files" | "folders" | "reminders" | "saved" | "topic" | "general";
 
 export interface UserContextData {
   overview: {
@@ -20,6 +21,8 @@ export interface UserContextData {
   recentFiles: Array<ContextItem & { filename: string; mimeType: string; size: string }>;
   upcomingReminders: Array<ContextItem & { dueDate: string; status: string }>;
   relevantSources: Array<RelevantSource>;
+  queryIntent: QueryIntent;
+  requestedTypes: Array<"note" | "file" | "reminder" | "folder">;
 }
 
 interface ContextItem {
@@ -70,20 +73,57 @@ const SEARCH_STOP_WORDS = new Set([
 const SAVED_DATA_QUERY_RE =
   /(сохранял|сохраненн|заметк|файл|папк|напомин|найди|покажи|перескажи|что у меня|какие у меня|в моих|из моих|mindvault|баз[аеы] знаний)/i;
 
+const NOTE_QUERY_RE = /(заметк|запис|мысл)/i;
+const FILE_QUERY_RE = /(файл|документ|загруз|вложен)/i;
+const FOLDER_QUERY_RE = /(папк|раздел|каталог)/i;
+const REMINDER_QUERY_RE = /(напомин|задач|срок|дедлайн|дел[ао])/i;
+const SAVED_OVERVIEW_QUERY_RE = /(что\s+я\s+сохранял|что\s+сохранено|покажи\s+сохран|какие\s+у\s+меня|что\s+у\s+меня)/i;
+
 function normalizeText(value: string): string {
   return value.toLowerCase().replace(/ё/g, "е");
 }
 
+function stemSearchTerm(word: string): string {
+  return word.replace(/(ами|ями|ого|ему|ыми|ими|ая|яя|ое|ее|ые|ие|ий|ый|ой|ом|ем|ах|ях|ам|ям|ов|ев|ей|ую|юю|а|я|у|ю|е|ы|и|о)$/i, "");
+}
+
 function getSearchTerms(query: string): string[] {
   const normalized = normalizeText(query);
+  const terms: string[] = [];
+  for (const word of normalized
+    .split(/[^\p{L}\p{N}_-]+/u)
+    .map((entry) => entry.trim())
+    .filter((entry) => entry.length > 2 && !SEARCH_STOP_WORDS.has(entry))) {
+    terms.push(word);
+    const stemmed = stemSearchTerm(word);
+    if (stemmed.length > 2 && stemmed !== word) terms.push(stemmed);
+  }
+
   return Array.from(
-    new Set(
-      normalized
-        .split(/[^\p{L}\p{N}_-]+/u)
-        .map((word) => word.trim())
-        .filter((word) => word.length > 2 && !SEARCH_STOP_WORDS.has(word)),
-    ),
+    new Set(terms),
   ).slice(0, 16);
+}
+
+function getRequestedTypes(query: string): Array<"note" | "file" | "reminder" | "folder"> {
+  const normalized = normalizeText(query);
+  const types: Array<"note" | "file" | "reminder" | "folder"> = [];
+  if (NOTE_QUERY_RE.test(normalized)) types.push("note");
+  if (FILE_QUERY_RE.test(normalized)) types.push("file");
+  if (FOLDER_QUERY_RE.test(normalized)) types.push("folder");
+  if (REMINDER_QUERY_RE.test(normalized)) types.push("reminder");
+  return types;
+}
+
+function detectQueryIntent(query: string): QueryIntent {
+  const normalized = normalizeText(query);
+  const requestedTypes = getRequestedTypes(normalized);
+  if (requestedTypes.length > 1) return "saved";
+  if (requestedTypes[0] === "note") return "notes";
+  if (requestedTypes[0] === "file") return "files";
+  if (requestedTypes[0] === "folder") return "folders";
+  if (requestedTypes[0] === "reminder") return "reminders";
+  if (SAVED_OVERVIEW_QUERY_RE.test(normalized) || SAVED_DATA_QUERY_RE.test(normalized)) return "saved";
+  return getSearchTerms(query).length > 0 ? "topic" : "general";
 }
 
 function truncateText(value: string | null | undefined, maxLength: number): string {
@@ -189,8 +229,25 @@ function scoreItem(query: string, terms: string[], item: Item, folderName: strin
     { value: folderName, weight: 2 },
     { value: item.summary ?? "", weight: 2 },
     { value: item.content ?? "", weight: 1 },
+    { value: Array.isArray(item.aiTags) ? item.aiTags.join(" ") : "", weight: 2 },
+    { value: item.aiCategory ?? "", weight: 2 },
     { value: item.type, weight: 1 },
   ]);
+}
+
+function sourceFromItem(item: Item, folder: string, score: number): RelevantSource {
+  return {
+    type: item.type,
+    title: item.type === "file" ? item.originalFilename ?? item.title : item.title,
+    folder,
+    date: formatDate(item.updatedAt),
+    excerpt: extractTextPreview(item),
+    score,
+  };
+}
+
+function sourceKey(source: RelevantSource): string {
+  return `${source.type}:${source.title}:${source.folder ?? ""}:${source.date ?? ""}`;
 }
 
 export async function buildAssistantContext(
@@ -208,6 +265,8 @@ export async function buildAssistantContext(
   const includeArchived = options?.includeArchived ?? false;
 
   try {
+    const queryIntent = detectQueryIntent(currentMessage);
+    const requestedTypes = getRequestedTypes(currentMessage);
     const folders = await db.select().from(foldersTable).where(eq(foldersTable.userId, userId));
     const folderMap = new Map(folders.map((folder) => [folder.id, folder.name]));
 
@@ -300,12 +359,12 @@ export async function buildAssistantContext(
 
     for (const folder of userFolders) {
       const score = scoreText(currentMessage, terms, [{ value: folder.name, weight: 4 }]);
-      if (score > 0) {
+      if (score > 0 || requestedTypes.includes("folder") || queryIntent === "folders" || queryIntent === "saved") {
         relevantSources.push({
           type: "folder",
           title: folder.name,
           excerpt: `Папка пользователя, объектов: ${folder.itemCount}`,
-          score,
+          score: score || (queryIntent === "folders" ? 80 : 30),
         });
       }
     }
@@ -313,15 +372,27 @@ export async function buildAssistantContext(
     for (const item of allItems) {
       const folder = folderMap.get(item.folderId ?? 0) ?? "Без папки";
       const score = scoreItem(currentMessage, terms, item, folder);
-      if (score > 0) {
-        relevantSources.push({
-          type: item.type,
-          title: item.type === "file" ? item.originalFilename ?? item.title : item.title,
-          folder,
-          date: formatDate(item.updatedAt),
-          excerpt: extractTextPreview(item),
-          score,
-        });
+      const shouldIncludeByIntent =
+        queryIntent === "saved" ||
+        requestedTypes.includes(item.type) ||
+        (queryIntent === "notes" && item.type === "note") ||
+        (queryIntent === "files" && item.type === "file") ||
+        (queryIntent === "reminders" && item.type === "reminder");
+
+      if (score > 0 || shouldIncludeByIntent) {
+        relevantSources.push(sourceFromItem(item, folder, score || (shouldIncludeByIntent ? 75 : 0)));
+      }
+    }
+
+    const matchedFolderIds = new Set(
+      userFolders
+        .filter((folder) => scoreText(currentMessage, terms, [{ value: folder.name, weight: 4 }]) > 0)
+        .map((folder) => folder.id),
+    );
+    if (matchedFolderIds.size > 0) {
+      for (const item of allItems.filter((entry) => entry.folderId && matchedFolderIds.has(entry.folderId))) {
+        const folder = folderMap.get(item.folderId ?? 0) ?? "Без папки";
+        relevantSources.push(sourceFromItem(item, folder, 65));
       }
     }
 
@@ -339,6 +410,31 @@ export async function buildAssistantContext(
       }
     }
 
+    const uniqueRelevantSources = Array.from(
+      new Map(
+        relevantSources
+          .sort((a, b) => b.score - a.score)
+          .map((source) => [sourceKey(source), source] as const),
+      ).values(),
+    ).slice(0, maxSearchResults);
+
+    logger.info(
+      {
+        userId,
+        conversationId,
+        queryIntent,
+        requestedTypes,
+        itemCount: allItems.length,
+        noteCount: notes.length,
+        fileCount: files.length,
+        folderCount: folders.length,
+        reminderCount: reminders.length,
+        relevantCount: uniqueRelevantSources.length,
+        sourceTitles: uniqueRelevantSources.map((source) => source.title).slice(0, 20),
+      },
+      "[assistant-context] collected user content",
+    );
+
     return {
       overview: {
         folderCount: folders.length,
@@ -350,9 +446,9 @@ export async function buildAssistantContext(
       recentNotes,
       recentFiles,
       upcomingReminders,
-      relevantSources: relevantSources
-        .sort((a, b) => b.score - a.score)
-        .slice(0, maxSearchResults),
+      relevantSources: uniqueRelevantSources,
+      queryIntent,
+      requestedTypes,
     };
   } catch (err) {
     logger.error({ err }, "Failed to build assistant context");
@@ -363,6 +459,8 @@ export async function buildAssistantContext(
       recentFiles: [],
       upcomingReminders: [],
       relevantSources: [],
+      queryIntent: "general",
+      requestedTypes: [],
     };
   }
 }
@@ -394,7 +492,7 @@ export function formatContextForPrompt(context: UserContextData, includeEverythi
   if (context.relevantSources.length > 0) {
     sections.push(
       [
-        "Relevant sources found by MindVault search:",
+      "Relevant sources found by MindVault search:",
         ...context.relevantSources.map((source, index) => {
           const folder = source.folder ? `, folder: ${source.folder}` : "";
           const date = source.date ? `, date: ${source.date}` : "";
@@ -439,13 +537,18 @@ export function formatContextForPrompt(context: UserContextData, includeEverythi
   }
 
   const asksAboutSavedData = SAVED_DATA_QUERY_RE.toString();
+  const hasAnySavedData =
+    context.overview.folderCount + context.overview.noteCount + context.overview.fileCount + context.overview.reminderCount > 0;
 
   return (
     "\n\n---\n" +
     "MindVault private user context. This data belongs only to the current authenticated user.\n" +
     "Use it when it is relevant to the user's question. Do not expose raw JSON or database details.\n" +
     "When you rely on saved notes, files, folders, reminders, or old chat messages, briefly name the source titles.\n" +
-    "If the user asks about saved data and the relevant sources section is empty, say in Russian: \"В сохраненных данных я не нашел ничего похожего.\" Do not invent saved content.\n" +
+    `Detected user-content query intent: ${context.queryIntent}. Saved data exists: ${hasAnySavedData ? "yes" : "no"}.\n` +
+    `Requested content types: ${context.requestedTypes.length > 0 ? context.requestedTypes.join(", ") : "not explicit"}.\n` +
+    "If the user asks to list notes, files, folders, or reminders, answer from the matching sections even when keyword relevance is broad.\n" +
+    "Say in Russian \"В сохраненных данных я не нашел ничего похожего.\" only when the user asks about saved data and no matching sources, recent items, or folders are present.\n" +
     `Saved-data query detector used by the app: ${asksAboutSavedData}\n\n` +
     sections.join("\n\n") +
     "\n---\n"
