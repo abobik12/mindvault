@@ -211,8 +211,10 @@ export default function Home() {
 
   const [isConvertingType, setIsConvertingType] = useState(false);
   const [isSavingSuggested, setIsSavingSuggested] = useState(false);
+  const [isNearBottom, setIsNearBottom] = useState(true);
 
   const messagesEndRef = useRef<HTMLDivElement>(null);
+  const messagesContainerRef = useRef<HTMLDivElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   const { data: conversations = [], isLoading: isConversationsLoading } = useListGeminiConversations();
@@ -270,16 +272,55 @@ export default function Home() {
     }
   }, [conversations, activeConversationId]);
 
-  useEffect(() => {
+  // Smart autoscroll: detect if near bottom and scroll accordingly
+  const scrollToBottom = (smooth = false) => {
     const end = messagesEndRef.current;
     if (!end) return;
+    end.scrollIntoView({ block: "end", behavior: smooth ? "smooth" : "auto" });
+  };
 
-    const animationFrame = window.requestAnimationFrame(() => {
-      end.scrollIntoView({ block: "end", behavior: "auto" });
-    });
+  // Track scroll position to detect if user is near bottom
+  useEffect(() => {
+    const container = messagesContainerRef.current;
+    if (!container) return;
 
-    return () => window.cancelAnimationFrame(animationFrame);
-  }, [activeConversationId, conversationMessages, streamingMessage]);
+    // Get the scrollable parent element (ScrollArea's viewport)
+    let scrollParent = container.parentElement;
+    while (scrollParent && scrollParent.scrollHeight === scrollParent.parentElement?.scrollHeight) {
+      scrollParent = scrollParent.parentElement;
+    }
+
+    if (!scrollParent) scrollParent = container.parentElement;
+
+    const handleScroll = () => {
+      if (!scrollParent) return;
+      const scrollPercentage = (scrollParent.scrollTop + scrollParent.clientHeight) / scrollParent.scrollHeight;
+      setIsNearBottom(scrollPercentage > 0.85);
+    };
+
+    if (scrollParent) {
+      scrollParent.addEventListener("scroll", handleScroll, { passive: true });
+      return () => scrollParent.removeEventListener("scroll", handleScroll);
+    }
+  }, []);
+
+  // Auto-scroll on new messages or streaming (only if near bottom or streaming)
+  useEffect(() => {
+    if (isNearBottom || isStreaming) {
+      const animationFrame = window.requestAnimationFrame(() => {
+        scrollToBottom(false);
+      });
+      return () => window.cancelAnimationFrame(animationFrame);
+    }
+  }, [conversationMessages, streamingMessage, isStreaming, isNearBottom]);
+
+  // Force scroll to bottom when sending a new message
+  useEffect(() => {
+    if (conversationMessages.length > 0 && !isStreaming) {
+      scrollToBottom(false);
+      setIsNearBottom(true);
+    }
+  }, [activeConversationId]);
 
   const patchMessageContext = (
     messageId: number,
@@ -929,7 +970,7 @@ export default function Home() {
         ) : (
           <>
             <ScrollArea className="flex-1 p-4">
-              <div className="max-w-3xl mx-auto space-y-6 pb-32">
+              <div ref={messagesContainerRef} className="max-w-3xl mx-auto space-y-6 pb-32">
                 {conversationMessages.map((msg, i) => (
                   <div key={msg.id || i} className={cn("flex gap-4", msg.role === "user" ? "flex-row-reverse" : "")}> 
                     <div

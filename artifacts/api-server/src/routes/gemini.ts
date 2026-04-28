@@ -18,6 +18,7 @@ import {
   getCurrentMoscowDateTimeForModel,
   parseReminderDateTime,
 } from "../lib/time";
+import { buildAssistantContext, formatContextForPrompt } from "../lib/ai-context";
 
 const router: IRouter = Router();
 const OPENAI_TEXT_MODEL = process.env.OPENAI_MODEL || "gpt-4.1-mini";
@@ -433,8 +434,23 @@ router.post("/gemini/conversations/:id/messages", requireAuth, async (req, res):
   }
 
   try {
+    // Build user context from saved data
+    const userContext = await buildAssistantContext(
+      req.auth!.userId,
+      bodyParsed.data.content,
+      conversation.id,
+      {
+        maxRecentItems: 8,
+        maxSearchResults: 5,
+        includeArchived: false,
+      },
+    );
+
+    const contextForPrompt = formatContextForPrompt(userContext);
+    const systemPromptWithContext = systemPrompt + contextForPrompt;
+
     const contentsForGemini = [
-      { role: "user" as const, parts: [{ text: systemPrompt }] },
+      { role: "user" as const, parts: [{ text: systemPromptWithContext }] },
       {
         role: "model" as const,
         parts: [{ text: "Понял задачу. Готов помочь с организацией вашего рабочего пространства." }],
