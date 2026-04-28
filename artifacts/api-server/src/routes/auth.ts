@@ -11,7 +11,7 @@ const router: IRouter = Router();
 router.post("/auth/register", async (req, res): Promise<void> => {
   const parsed = RegisterBody.safeParse(req.body);
   if (!parsed.success) {
-    res.status(400).json({ error: parsed.error.message });
+    res.status(400).json({ error: "Некорректные данные запроса" });
     return;
   }
 
@@ -20,7 +20,7 @@ router.post("/auth/register", async (req, res): Promise<void> => {
   // Check email uniqueness
   const [existing] = await db.select({ id: usersTable.id }).from(usersTable).where(eq(usersTable.email, email.toLowerCase())).limit(1);
   if (existing) {
-    res.status(409).json({ error: "Email already in use" });
+    res.status(409).json({ error: "Этот email уже используется" });
     return;
   }
 
@@ -34,10 +34,10 @@ router.post("/auth/register", async (req, res): Promise<void> => {
 
   // Create default system folders for new user
   const systemFolders = [
-    { name: "Inbox", icon: "inbox", color: "#6366f1", isSystem: true },
-    { name: "Notes", icon: "file-text", color: "#10b981", isSystem: true },
-    { name: "Files", icon: "folder", color: "#f59e0b", isSystem: true },
-    { name: "Reminders", icon: "bell", color: "#ef4444", isSystem: true },
+    { name: "Входящие", icon: "inbox", color: "#6366f1", isSystem: true },
+    { name: "Заметки", icon: "file-text", color: "#10b981", isSystem: true },
+    { name: "Файлы", icon: "folder", color: "#f59e0b", isSystem: true },
+    { name: "Напоминания", icon: "bell", color: "#ef4444", isSystem: true },
   ];
 
   await db.insert(foldersTable).values(
@@ -62,7 +62,7 @@ router.post("/auth/register", async (req, res): Promise<void> => {
 router.post("/auth/login", async (req, res): Promise<void> => {
   const parsed = LoginBody.safeParse(req.body);
   if (!parsed.success) {
-    res.status(400).json({ error: parsed.error.message });
+    res.status(400).json({ error: "Некорректные данные запроса" });
     return;
   }
 
@@ -70,13 +70,13 @@ router.post("/auth/login", async (req, res): Promise<void> => {
 
   const [user] = await db.select().from(usersTable).where(eq(usersTable.email, email.toLowerCase())).limit(1);
   if (!user) {
-    res.status(401).json({ error: "Invalid email or password" });
+    res.status(401).json({ error: "Неверный email или пароль" });
     return;
   }
 
   const valid = await bcrypt.compare(password, user.passwordHash);
   if (!valid) {
-    res.status(401).json({ error: "Invalid email or password" });
+    res.status(401).json({ error: "Неверный email или пароль" });
     return;
   }
 
@@ -98,7 +98,7 @@ router.post("/auth/login", async (req, res): Promise<void> => {
 router.get("/auth/me", requireAuth, async (req, res): Promise<void> => {
   const [user] = await db.select().from(usersTable).where(eq(usersTable.id, req.auth!.userId)).limit(1);
   if (!user) {
-    res.status(401).json({ error: "User not found" });
+    res.status(401).json({ error: "Пользователь не найден" });
     return;
   }
 
@@ -115,7 +115,7 @@ router.get("/auth/me", requireAuth, async (req, res): Promise<void> => {
 router.patch("/auth/me/profile", requireAuth, async (req, res): Promise<void> => {
   const parsed = UpdateProfileBody.safeParse(req.body);
   if (!parsed.success) {
-    res.status(400).json({ error: parsed.error.message });
+    res.status(400).json({ error: "Некорректные данные запроса" });
     return;
   }
 
@@ -129,7 +129,7 @@ router.patch("/auth/me/profile", requireAuth, async (req, res): Promise<void> =>
     .returning();
 
   if (!user) {
-    res.status(404).json({ error: "User not found" });
+    res.status(404).json({ error: "Пользователь не найден" });
     return;
   }
 

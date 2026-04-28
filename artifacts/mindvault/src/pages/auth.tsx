@@ -1,28 +1,27 @@
-import { useState } from "react";
+﻿import { useState } from "react";
 import { useLocation } from "wouter";
 import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import * as z from "zod";
-import { useLogin, useRegister, useGetMe, getGetMeQueryKey } from "@workspace/api-client-react";
+import { useLogin, useRegister, getGetMeQueryKey } from "@workspace/api-client-react";
 import { useQueryClient } from "@tanstack/react-query";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { Label } from "@/components/ui/label";
-import { Card, CardContent, CardDescription, CardFooter, CardHeader, CardTitle } from "@/components/ui/card";
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Form, FormControl, FormField, FormItem, FormLabel, FormMessage } from "@/components/ui/form";
 import { Brain, Loader2 } from "lucide-react";
 import { toast } from "sonner";
 
 const loginSchema = z.object({
-  email: z.string().email("Invalid email address"),
-  password: z.string().min(1, "Password is required"),
+  email: z.string().email("Некорректный email"),
+  password: z.string().min(1, "Введите пароль"),
 });
 
 const registerSchema = z.object({
-  fullName: z.string().min(2, "Name is required"),
-  email: z.string().email("Invalid email address"),
-  password: z.string().min(6, "Password must be at least 6 characters"),
+  fullName: z.string().min(2, "Введите имя"),
+  email: z.string().email("Некорректный email"),
+  password: z.string().min(6, "Пароль должен быть не короче 6 символов"),
 });
 
 export default function AuthPage() {
@@ -45,11 +44,11 @@ export default function AuthPage() {
       onSuccess: (data) => {
         localStorage.setItem("mindvault_token", data.token);
         queryClient.setQueryData(getGetMeQueryKey(), data.user);
-        toast.success("Welcome back!");
+        toast.success("С возвращением!");
         setLocation("/");
       },
       onError: (error) => {
-        toast.error(error.data?.error || "Failed to login");
+        toast.error(error.data?.error || "Не удалось войти в аккаунт");
       },
     },
   });
@@ -59,11 +58,11 @@ export default function AuthPage() {
       onSuccess: (data) => {
         localStorage.setItem("mindvault_token", data.token);
         queryClient.setQueryData(getGetMeQueryKey(), data.user);
-        toast.success("Account created successfully!");
+        toast.success("Аккаунт успешно создан");
         setLocation("/");
       },
       onError: (error) => {
-        toast.error(error.data?.error || "Failed to register");
+        toast.error(error.data?.error || "Не удалось зарегистрироваться");
       },
     },
   });
@@ -84,22 +83,24 @@ export default function AuthPage() {
             <Brain className="text-primary-foreground w-6 h-6" />
           </div>
           <div>
-            <h1 className="text-2xl font-bold tracking-tight">Welcome to MindVault</h1>
-            <p className="text-sm text-muted-foreground mt-1">Your intelligent personal workspace.</p>
+            <h1 className="text-2xl font-bold tracking-tight">Добро пожаловать в MindVault</h1>
+            <p className="text-sm text-muted-foreground mt-1">
+              Ваш интеллектуальный персональный рабочий кабинет.
+            </p>
           </div>
         </div>
 
         <Tabs value={activeTab} onValueChange={setActiveTab} className="w-full">
           <TabsList className="grid w-full grid-cols-2 mb-4">
-            <TabsTrigger value="login">Sign In</TabsTrigger>
-            <TabsTrigger value="register">Sign Up</TabsTrigger>
+            <TabsTrigger value="login">Вход</TabsTrigger>
+            <TabsTrigger value="register">Регистрация</TabsTrigger>
           </TabsList>
 
           <TabsContent value="login">
             <Card className="border-none shadow-xl shadow-slate-200/50 dark:shadow-none bg-white/50 dark:bg-slate-900/50 backdrop-blur-xl">
               <CardHeader>
-                <CardTitle>Sign In</CardTitle>
-                <CardDescription>Enter your credentials to access your vault.</CardDescription>
+                <CardTitle>Вход в аккаунт</CardTitle>
+                <CardDescription>Введите данные, чтобы открыть ваш рабочий кабинет.</CardDescription>
               </CardHeader>
               <CardContent>
                 <Form {...loginForm}>
@@ -109,9 +110,9 @@ export default function AuthPage() {
                       name="email"
                       render={({ field }) => (
                         <FormItem>
-                          <FormLabel>Email</FormLabel>
+                          <FormLabel>Электронная почта</FormLabel>
                           <FormControl>
-                            <Input placeholder="you@example.com" {...field} />
+                            <Input placeholder="example@mail.ru" {...field} />
                           </FormControl>
                           <FormMessage />
                         </FormItem>
@@ -122,9 +123,9 @@ export default function AuthPage() {
                       name="password"
                       render={({ field }) => (
                         <FormItem>
-                          <FormLabel>Password</FormLabel>
+                          <FormLabel>Пароль</FormLabel>
                           <FormControl>
-                            <Input type="password" placeholder="••••••••" {...field} />
+                            <Input type="password" placeholder="********" {...field} />
                           </FormControl>
                           <FormMessage />
                         </FormItem>
@@ -132,7 +133,7 @@ export default function AuthPage() {
                     />
                     <Button type="submit" className="w-full" disabled={loginMutation.isPending}>
                       {loginMutation.isPending ? <Loader2 className="w-4 h-4 mr-2 animate-spin" /> : null}
-                      Sign In
+                      Войти
                     </Button>
                   </form>
                 </Form>
@@ -143,8 +144,8 @@ export default function AuthPage() {
           <TabsContent value="register">
             <Card className="border-none shadow-xl shadow-slate-200/50 dark:shadow-none bg-white/50 dark:bg-slate-900/50 backdrop-blur-xl">
               <CardHeader>
-                <CardTitle>Create Account</CardTitle>
-                <CardDescription>Start organizing your thoughts today.</CardDescription>
+                <CardTitle>Создать аккаунт</CardTitle>
+                <CardDescription>Начните организовывать задачи и идеи уже сейчас.</CardDescription>
               </CardHeader>
               <CardContent>
                 <Form {...registerForm}>
@@ -154,9 +155,9 @@ export default function AuthPage() {
                       name="fullName"
                       render={({ field }) => (
                         <FormItem>
-                          <FormLabel>Full Name</FormLabel>
+                          <FormLabel>Имя</FormLabel>
                           <FormControl>
-                            <Input placeholder="John Doe" {...field} />
+                            <Input placeholder="Иван Иванов" {...field} />
                           </FormControl>
                           <FormMessage />
                         </FormItem>
@@ -167,9 +168,9 @@ export default function AuthPage() {
                       name="email"
                       render={({ field }) => (
                         <FormItem>
-                          <FormLabel>Email</FormLabel>
+                          <FormLabel>Электронная почта</FormLabel>
                           <FormControl>
-                            <Input placeholder="you@example.com" {...field} />
+                            <Input placeholder="example@mail.ru" {...field} />
                           </FormControl>
                           <FormMessage />
                         </FormItem>
@@ -180,9 +181,9 @@ export default function AuthPage() {
                       name="password"
                       render={({ field }) => (
                         <FormItem>
-                          <FormLabel>Password</FormLabel>
+                          <FormLabel>Пароль</FormLabel>
                           <FormControl>
-                            <Input type="password" placeholder="••••••••" {...field} />
+                            <Input type="password" placeholder="********" {...field} />
                           </FormControl>
                           <FormMessage />
                         </FormItem>
@@ -190,7 +191,7 @@ export default function AuthPage() {
                     />
                     <Button type="submit" className="w-full" disabled={registerMutation.isPending}>
                       {registerMutation.isPending ? <Loader2 className="w-4 h-4 mr-2 animate-spin" /> : null}
-                      Sign Up
+                      Зарегистрироваться
                     </Button>
                   </form>
                 </Form>

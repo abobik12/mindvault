@@ -1,0 +1,12 @@
+.git
+.local
+.agents
+node_modules
+**/node_modules
+**/dist
+**/.turbo
+**/.cache
+**/coverage
+npm-debug.log
+yarn-error.log
+pnpm-debug.log

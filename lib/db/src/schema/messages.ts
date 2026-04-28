@@ -1,4 +1,4 @@
-import { integer, pgTable, serial, text, timestamp } from "drizzle-orm/pg-core";
+import { integer, jsonb, pgTable, serial, text, timestamp } from "drizzle-orm/pg-core";
 import { createInsertSchema } from "drizzle-zod";
 import { z } from "zod/v4";
 import { conversations } from "./conversations";
@@ -10,6 +10,7 @@ export const messages = pgTable("messages", {
     .references(() => conversations.id, { onDelete: "cascade" }),
   role: text("role").notNull(), // "user" | "assistant"
   content: text("content").notNull(),
+  metadata: jsonb("metadata").$type<Record<string, unknown> | null>(),
   createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
 });
 

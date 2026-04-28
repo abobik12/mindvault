@@ -10,6 +10,7 @@ import NotesPage from "@/pages/notes";
 import FilesPage from "@/pages/files";
 import RemindersPage from "@/pages/reminders";
 import SettingsPage from "@/pages/settings";
+import FolderPage from "@/pages/folder";
 
 const queryClient = new QueryClient();
 
@@ -37,6 +38,7 @@ function Router() {
       <Route path="/notes" component={() => <ProtectedRoute component={NotesPage} />} />
       <Route path="/files" component={() => <ProtectedRoute component={FilesPage} />} />
       <Route path="/reminders" component={() => <ProtectedRoute component={RemindersPage} />} />
+      <Route path="/folders/:id" component={() => <ProtectedRoute component={FolderPage} />} />
       <Route path="/settings" component={() => <ProtectedRoute component={SettingsPage} />} />
       <Route component={NotFound} />
     </Switch>

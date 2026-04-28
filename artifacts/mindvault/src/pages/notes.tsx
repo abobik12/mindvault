@@ -1,14 +1,12 @@
-import { useState } from "react";
-import { useLocation } from "wouter";
-import { format } from "date-fns";
-import { 
-  useListItems, 
-  useSearchItems,
+﻿import { useState } from "react";
+import {
+  useListItems,
   useCreateItem,
   useUpdateItem,
   useDeleteItem,
   getListItemsQueryKey,
-  useListFolders
+  useListFolders,
+  getListFoldersQueryKey,
 } from "@workspace/api-client-react";
 import { useQueryClient } from "@tanstack/react-query";
 import { Button } from "@/components/ui/button";
@@ -18,15 +16,16 @@ import { Badge } from "@/components/ui/badge";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter, DialogTrigger } from "@/components/ui/dialog";
 import { Textarea } from "@/components/ui/textarea";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { Search, Plus, FileText, Trash2, Folder as FolderIcon, Loader2, Tag } from "lucide-react";
+import { Search, Plus, FileText, Trash2, Folder as FolderIcon, Loader2, Tag, Pencil } from "lucide-react";
 import { toast } from "sonner";
 import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import * as z from "zod";
+import { formatMoscowDateShort } from "@/lib/time";
 
 const noteSchema = z.object({
-  title: z.string().min(1, "Title is required"),
-  content: z.string().min(1, "Content is required"),
+  title: z.string().min(1, "Введите заголовок"),
+  content: z.string().min(1, "Введите текст заметки"),
   folderId: z.string().optional(),
 });
 
@@ -36,43 +35,51 @@ export default function NotesPage() {
   const [editingNote, setEditingNote] = useState<any>(null);
   const queryClient = useQueryClient();
 
-  const { data: items = [], isLoading } = useListItems({ query: { queryKey: getListItemsQueryKey() } });
+  const { data: notes = [], isLoading } = useListItems(
+    { type: "note", status: "active" },
+    { query: { queryKey: getListItemsQueryKey({ type: "note", status: "active" }) } },
+  );
   const { data: folders = [] } = useListFolders();
-  
-  const notes = items.filter(i => i.type === 'note' && i.status === 'active');
-  
-  const filteredNotes = search 
-    ? notes.filter(n => n.title.toLowerCase().includes(search.toLowerCase()) || n.content?.toLowerCase().includes(search.toLowerCase()))
+
+  const filteredNotes = search
+    ? notes.filter(
+        (note) =>
+          note.title.toLowerCase().includes(search.toLowerCase()) ||
+          note.content?.toLowerCase().includes(search.toLowerCase()),
+      )
     : notes;
 
   const createItem = useCreateItem({
     mutation: {
       onSuccess: () => {
         queryClient.invalidateQueries({ queryKey: getListItemsQueryKey() });
+        queryClient.invalidateQueries({ queryKey: getListFoldersQueryKey() });
         setIsCreateOpen(false);
         form.reset();
-        toast.success("Note created");
-      }
-    }
+        toast.success("Заметка создана");
+      },
+    },
   });
 
   const updateItem = useUpdateItem({
     mutation: {
       onSuccess: () => {
         queryClient.invalidateQueries({ queryKey: getListItemsQueryKey() });
+        queryClient.invalidateQueries({ queryKey: getListFoldersQueryKey() });
         setEditingNote(null);
-        toast.success("Note updated");
-      }
-    }
+        toast.success("Заметка обновлена");
+      },
+    },
   });
 
   const deleteItem = useDeleteItem({
     mutation: {
       onSuccess: () => {
         queryClient.invalidateQueries({ queryKey: getListItemsQueryKey() });
-        toast.success("Note deleted");
-      }
-    }
+        queryClient.invalidateQueries({ queryKey: getListFoldersQueryKey() });
+        toast.success("Заметка удалена");
+      },
+    },
   });
 
   const form = useForm<z.infer<typeof noteSchema>>({
@@ -88,23 +95,24 @@ export default function NotesPage() {
   const onSubmitCreate = (values: z.infer<typeof noteSchema>) => {
     createItem.mutate({
       data: {
-        type: 'note',
+        type: "note",
         title: values.title,
         content: values.content,
-        folderId: values.folderId === "none" ? null : parseInt(values.folderId || "0")
-      }
+        folderId: values.folderId === "none" ? null : parseInt(values.folderId || "0", 10),
+      },
     });
   };
 
   const onSubmitEdit = (values: z.infer<typeof noteSchema>) => {
     if (!editingNote) return;
+
     updateItem.mutate({
       id: editingNote.id,
       data: {
         title: values.title,
         content: values.content,
-        folderId: values.folderId === "none" ? null : parseInt(values.folderId || "0")
-      }
+        folderId: values.folderId === "none" ? null : parseInt(values.folderId || "0", 10),
+      },
     });
   };
 
@@ -113,7 +121,7 @@ export default function NotesPage() {
     editForm.reset({
       title: note.title,
       content: note.content || "",
-      folderId: note.folderId ? String(note.folderId) : "none"
+      folderId: note.folderId ? String(note.folderId) : "none",
     });
   };
 
@@ -121,51 +129,59 @@ export default function NotesPage() {
     <div className="h-full flex flex-col p-6 bg-slate-50/50 dark:bg-transparent">
       <div className="flex items-center justify-between mb-8">
         <div>
-          <h1 className="text-3xl font-serif font-bold tracking-tight text-foreground">Notes</h1>
-          <p className="text-muted-foreground text-sm mt-1">Capture your thoughts and ideas.</p>
+          <h1 className="text-3xl font-serif font-bold tracking-tight text-foreground">Заметки</h1>
+          <p className="text-muted-foreground text-sm mt-1">Сохраняйте мысли, планы и идеи в одном месте.</p>
         </div>
-        
+
         <Dialog open={isCreateOpen} onOpenChange={setIsCreateOpen}>
           <DialogTrigger asChild>
             <Button className="shadow-md shadow-primary/20 gap-2">
               <Plus className="w-4 h-4" />
-              New Note
+              Новая заметка
             </Button>
           </DialogTrigger>
           <DialogContent className="sm:max-w-[600px]">
             <DialogHeader>
-              <DialogTitle>Create Note</DialogTitle>
+              <DialogTitle>Новая заметка</DialogTitle>
             </DialogHeader>
             <form onSubmit={form.handleSubmit(onSubmitCreate)} className="space-y-4">
               <div className="space-y-2">
-                <Input placeholder="Note title" {...form.register("title")} className="text-lg font-medium" />
-                {form.formState.errors.title && <p className="text-destructive text-xs">{form.formState.errors.title.message}</p>}
+                <Input placeholder="Заголовок заметки" {...form.register("title")} className="text-lg font-medium" />
+                {form.formState.errors.title && (
+                  <p className="text-destructive text-xs">{form.formState.errors.title.message}</p>
+                )}
               </div>
               <div className="space-y-2">
-                <Textarea 
-                  placeholder="Write your note here..." 
-                  {...form.register("content")} 
+                <Textarea
+                  placeholder="Текст заметки..."
+                  {...form.register("content")}
                   className="min-h-[200px] resize-y"
                 />
-                {form.formState.errors.content && <p className="text-destructive text-xs">{form.formState.errors.content.message}</p>}
+                {form.formState.errors.content && (
+                  <p className="text-destructive text-xs">{form.formState.errors.content.message}</p>
+                )}
               </div>
               <div className="space-y-2">
-                <Select onValueChange={(v) => form.setValue("folderId", v)} defaultValue="none">
+                <Select onValueChange={(value) => form.setValue("folderId", value)} defaultValue="none">
                   <SelectTrigger>
-                    <SelectValue placeholder="Select a folder" />
+                    <SelectValue placeholder="Выберите папку" />
                   </SelectTrigger>
                   <SelectContent>
-                    <SelectItem value="none">No folder</SelectItem>
-                    {folders.filter(f => !f.isSystem).map(f => (
-                      <SelectItem key={f.id} value={String(f.id)}>{f.name}</SelectItem>
-                    ))}
+                    <SelectItem value="none">Без папки</SelectItem>
+                    {folders
+                      .filter((folder) => !folder.isSystem)
+                      .map((folder) => (
+                        <SelectItem key={folder.id} value={String(folder.id)}>
+                          {folder.name}
+                        </SelectItem>
+                      ))}
                   </SelectContent>
                 </Select>
               </div>
               <DialogFooter>
                 <Button type="submit" disabled={createItem.isPending}>
                   {createItem.isPending && <Loader2 className="w-4 h-4 mr-2 animate-spin" />}
-                  Save Note
+                  Сохранить
                 </Button>
               </DialogFooter>
             </form>
@@ -175,8 +191,8 @@ export default function NotesPage() {
 
       <div className="relative mb-6 max-w-md">
         <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
-        <Input 
-          placeholder="Search notes..." 
+        <Input
+          placeholder="Поиск по заметкам..."
           className="pl-9 bg-card border-border/50 shadow-sm"
           value={search}
           onChange={(e) => setSearch(e.target.value)}
@@ -192,33 +208,41 @@ export default function NotesPage() {
           <div className="w-16 h-16 bg-muted rounded-2xl flex items-center justify-center mb-4">
             <FileText className="w-8 h-8 text-muted-foreground/50" />
           </div>
-          <p className="font-medium">No notes found</p>
-          <p className="text-sm opacity-70">Start writing down your thoughts.</p>
+          <p className="font-medium">Заметок пока нет</p>
+          <p className="text-sm opacity-70">Создайте первую заметку, чтобы начать работу.</p>
         </div>
       ) : (
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4 pb-12">
-          {filteredNotes.map(note => (
-            <Card key={note.id} className="group hover:shadow-md transition-all cursor-pointer border-border/50 hover:border-primary/30 flex flex-col h-[240px]">
+          {filteredNotes.map((note) => (
+            <Card
+              key={note.id}
+              className="group hover:shadow-md transition-all cursor-pointer border-border/50 hover:border-primary/30 flex flex-col h-[240px]"
+            >
               <CardHeader className="pb-3 px-5 pt-5 relative">
                 <div className="flex justify-between items-start">
                   <CardTitle className="text-lg leading-tight line-clamp-2 pr-6">{note.title}</CardTitle>
                 </div>
                 <div className="absolute top-4 right-4 opacity-0 group-hover:opacity-100 transition-opacity flex gap-1">
-                  <Button 
-                    variant="ghost" 
-                    size="icon" 
+                  <Button
+                    variant="ghost"
+                    size="icon"
                     className="h-7 w-7 text-muted-foreground hover:text-primary bg-background/50 backdrop-blur-sm"
-                    onClick={(e) => { e.stopPropagation(); handleEditClick(note); }}
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      handleEditClick(note);
+                    }}
                   >
-                    <FileText className="w-3.5 h-3.5" />
+                    <Pencil className="w-3.5 h-3.5" />
                   </Button>
-                  <Button 
-                    variant="ghost" 
-                    size="icon" 
+                  <Button
+                    variant="ghost"
+                    size="icon"
                     className="h-7 w-7 text-muted-foreground hover:text-destructive bg-background/50 backdrop-blur-sm"
-                    onClick={(e) => { 
-                      e.stopPropagation(); 
-                      if(confirm("Delete this note?")) deleteItem.mutate({ id: note.id }); 
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      if (window.confirm("Удалить заметку?")) {
+                        deleteItem.mutate({ id: note.id });
+                      }
                     }}
                   >
                     <Trash2 className="w-3.5 h-3.5" />
@@ -226,9 +250,7 @@ export default function NotesPage() {
                 </div>
               </CardHeader>
               <CardContent className="flex-1 px-5 pb-4 overflow-hidden" onClick={() => handleEditClick(note)}>
-                <p className="text-sm text-muted-foreground line-clamp-4 leading-relaxed">
-                  {note.summary || note.content}
-                </p>
+                <p className="text-sm text-muted-foreground line-clamp-4 leading-relaxed">{note.summary || note.content}</p>
               </CardContent>
               <CardFooter className="px-5 pb-4 pt-0 flex flex-wrap gap-2 items-center justify-between border-t border-border/10 pt-3 mt-auto">
                 <div className="flex flex-wrap gap-1.5">
@@ -246,7 +268,7 @@ export default function NotesPage() {
                   ))}
                 </div>
                 <span className="text-[10px] text-muted-foreground ml-auto font-medium">
-                  {format(new Date(note.createdAt), "MMM d")}
+                  {formatMoscowDateShort(note.createdAt)}
                 </span>
               </CardFooter>
             </Card>
@@ -254,40 +276,47 @@ export default function NotesPage() {
         </div>
       )}
 
-      {/* Edit Dialog */}
-      <Dialog open={!!editingNote} onOpenChange={(o) => !o && setEditingNote(null)}>
+      <Dialog open={!!editingNote} onOpenChange={(open) => !open && setEditingNote(null)}>
         <DialogContent className="sm:max-w-[700px] h-[80vh] flex flex-col">
           <DialogHeader className="shrink-0">
-            <DialogTitle>Edit Note</DialogTitle>
+            <DialogTitle>Редактирование заметки</DialogTitle>
           </DialogHeader>
           <form onSubmit={editForm.handleSubmit(onSubmitEdit)} className="flex-1 flex flex-col min-h-0 space-y-4">
             <div className="space-y-2 shrink-0">
-              <Input placeholder="Note title" {...editForm.register("title")} className="text-xl font-bold border-0 bg-transparent px-0 focus-visible:ring-0 shadow-none" />
+              <Input
+                placeholder="Заголовок заметки"
+                {...editForm.register("title")}
+                className="text-xl font-bold border-0 bg-transparent px-0 focus-visible:ring-0 shadow-none"
+              />
             </div>
             <div className="space-y-2 flex-1 min-h-0 flex flex-col">
-              <Textarea 
-                placeholder="Write your note here..." 
-                {...editForm.register("content")} 
+              <Textarea
+                placeholder="Текст заметки..."
+                {...editForm.register("content")}
                 className="flex-1 resize-none border-0 bg-transparent px-0 focus-visible:ring-0 shadow-none text-base leading-relaxed"
               />
             </div>
             <div className="space-y-2 shrink-0 pt-4 border-t border-border/50">
-              <Select onValueChange={(v) => editForm.setValue("folderId", v)} value={editForm.watch("folderId")}>
+              <Select onValueChange={(value) => editForm.setValue("folderId", value)} value={editForm.watch("folderId")}>
                 <SelectTrigger className="w-[200px]">
-                  <SelectValue placeholder="Select a folder" />
+                  <SelectValue placeholder="Выберите папку" />
                 </SelectTrigger>
                 <SelectContent>
-                  <SelectItem value="none">No folder</SelectItem>
-                  {folders.filter(f => !f.isSystem).map(f => (
-                    <SelectItem key={f.id} value={String(f.id)}>{f.name}</SelectItem>
-                  ))}
+                  <SelectItem value="none">Без папки</SelectItem>
+                  {folders
+                    .filter((folder) => !folder.isSystem)
+                    .map((folder) => (
+                      <SelectItem key={folder.id} value={String(folder.id)}>
+                        {folder.name}
+                      </SelectItem>
+                    ))}
                 </SelectContent>
               </Select>
             </div>
             <DialogFooter className="shrink-0 pt-2">
               <Button type="submit" disabled={updateItem.isPending}>
                 {updateItem.isPending && <Loader2 className="w-4 h-4 mr-2 animate-spin" />}
-                Save Changes
+                Сохранить изменения
               </Button>
             </DialogFooter>
           </form>

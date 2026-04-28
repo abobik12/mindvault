@@ -366,6 +366,7 @@ export const ClassifyContentBody = zod.object({
     .number()
     .nullish()
     .describe("Optional conversation context"),
+  folderId: zod.number().nullish().describe("Optional folder context"),
 });
 
 export const ClassifyContentResponse = zod.object({

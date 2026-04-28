@@ -1,6 +1,5 @@
 import { type Request, type Response, type NextFunction } from "express";
 import jwt from "jsonwebtoken";
-import { logger } from "../lib/logger";
 
 const JWT_SECRET = process.env.SESSION_SECRET ?? "mindvault-dev-secret-change-in-prod";
 
@@ -35,7 +34,7 @@ export function requireAuth(req: Request, res: Response, next: NextFunction): vo
   const authHeader = req.headers.authorization;
 
   if (!authHeader || !authHeader.startsWith("Bearer ")) {
-    res.status(401).json({ error: "Authentication required" });
+    res.status(401).json({ error: "Требуется авторизация" });
     return;
   }
 
@@ -43,7 +42,7 @@ export function requireAuth(req: Request, res: Response, next: NextFunction): vo
   const payload = verifyToken(token);
 
   if (!payload) {
-    res.status(401).json({ error: "Invalid or expired token" });
+    res.status(401).json({ error: "Токен недействителен или срок его действия истек" });
     return;
   }
 

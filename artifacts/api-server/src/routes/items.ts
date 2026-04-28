@@ -2,6 +2,7 @@ import { Router, type IRouter } from "express";
 import { eq, and, desc, asc, ilike, or, sql } from "drizzle-orm";
 import { db, itemsTable, foldersTable } from "@workspace/db";
 import { requireAuth } from "../middlewares/auth";
+import { parseReminderDateTime } from "../lib/time";
 import {
   ListItemsQueryParams,
   CreateItemBody,
@@ -17,11 +18,25 @@ import {
 
 const router: IRouter = Router();
 
+async function folderBelongsToUser(userId: number, folderId: number): Promise<boolean> {
+  const [folder] = await db
+    .select({ id: foldersTable.id })
+    .from(foldersTable)
+    .where(and(eq(foldersTable.id, folderId), eq(foldersTable.userId, userId)))
+    .limit(1);
+
+  return Boolean(folder);
+}
+
 // Helper to build item response with folder name
 async function itemWithFolder(item: typeof itemsTable.$inferSelect) {
   let folderName: string | null = null;
   if (item.folderId) {
-    const [folder] = await db.select({ name: foldersTable.name }).from(foldersTable).where(eq(foldersTable.id, item.folderId)).limit(1);
+    const [folder] = await db
+      .select({ name: foldersTable.name })
+      .from(foldersTable)
+      .where(and(eq(foldersTable.id, item.folderId), eq(foldersTable.userId, item.userId)))
+      .limit(1);
     folderName = folder?.name ?? null;
   }
 
@@ -52,13 +67,22 @@ async function itemWithFolder(item: typeof itemsTable.$inferSelect) {
 router.get("/items", requireAuth, async (req, res): Promise<void> => {
   const params = ListItemsQueryParams.safeParse(req.query);
   if (!params.success) {
-    res.status(400).json({ error: params.error.message });
+    res.status(400).json({ error: "Некорректные данные запроса" });
     return;
   }
 
   const { type, folderId, status, limit = 50, offset = 0 } = params.data;
+  const userId = req.auth!.userId;
 
-  const conditions = [eq(itemsTable.userId, req.auth!.userId)];
+  if (folderId !== undefined && folderId !== null) {
+    const hasAccess = await folderBelongsToUser(userId, folderId);
+    if (!hasAccess) {
+      res.status(404).json({ error: "Папка не найдена" });
+      return;
+    }
+  }
+
+  const conditions = [eq(itemsTable.userId, userId)];
   if (type) conditions.push(eq(itemsTable.type, type as "note" | "file" | "reminder"));
   if (folderId !== undefined && folderId !== null) conditions.push(eq(itemsTable.folderId, folderId));
   if (status) conditions.push(eq(itemsTable.status, status as "active" | "archived" | "completed"));
@@ -77,8 +101,24 @@ router.get("/items", requireAuth, async (req, res): Promise<void> => {
 router.post("/items", requireAuth, async (req, res): Promise<void> => {
   const parsed = CreateItemBody.safeParse(req.body);
   if (!parsed.success) {
-    res.status(400).json({ error: parsed.error.message });
+    res.status(400).json({ error: "Некорректные данные запроса" });
     return;
+  }
+
+  let reminderAt: Date | null = null;
+  try {
+    reminderAt = parseReminderDateTime(parsed.data.reminderAt);
+  } catch {
+    res.status(400).json({ error: "Некорректная дата напоминания" });
+    return;
+  }
+
+  if (parsed.data.folderId !== undefined && parsed.data.folderId !== null) {
+    const hasAccess = await folderBelongsToUser(req.auth!.userId, parsed.data.folderId);
+    if (!hasAccess) {
+      res.status(404).json({ error: "Папка не найдена" });
+      return;
+    }
   }
 
   const [item] = await db.insert(itemsTable).values({
@@ -87,7 +127,7 @@ router.post("/items", requireAuth, async (req, res): Promise<void> => {
     title: parsed.data.title,
     content: parsed.data.content ?? null,
     folderId: parsed.data.folderId ?? null,
-    reminderAt: parsed.data.reminderAt ? new Date(parsed.data.reminderAt) : null,
+    reminderAt,
     status: "active",
     aiTags: [],
   }).returning();
@@ -99,11 +139,19 @@ router.post("/items", requireAuth, async (req, res): Promise<void> => {
 router.post("/items/upload", requireAuth, async (req, res): Promise<void> => {
   const parsed = UploadFileBody.safeParse(req.body);
   if (!parsed.success) {
-    res.status(400).json({ error: parsed.error.message });
+    res.status(400).json({ error: "Некорректные данные запроса" });
     return;
   }
 
   const { filename, mimeType, fileData, fileSize, folderId } = parsed.data;
+
+  if (folderId !== undefined && folderId !== null) {
+    const hasAccess = await folderBelongsToUser(req.auth!.userId, folderId);
+    if (!hasAccess) {
+      res.status(404).json({ error: "Папка не найдена" });
+      return;
+    }
+  }
 
   const [item] = await db.insert(itemsTable).values({
     userId: req.auth!.userId,
@@ -125,7 +173,7 @@ router.post("/items/upload", requireAuth, async (req, res): Promise<void> => {
 router.get("/items/:id", requireAuth, async (req, res): Promise<void> => {
   const params = GetItemParams.safeParse(req.params);
   if (!params.success) {
-    res.status(400).json({ error: params.error.message });
+    res.status(400).json({ error: "Некорректные данные запроса" });
     return;
   }
 
@@ -134,7 +182,7 @@ router.get("/items/:id", requireAuth, async (req, res): Promise<void> => {
     .limit(1);
 
   if (!item) {
-    res.status(404).json({ error: "Item not found" });
+    res.status(404).json({ error: "Элемент не найден" });
     return;
   }
 
@@ -145,22 +193,49 @@ router.get("/items/:id", requireAuth, async (req, res): Promise<void> => {
 router.patch("/items/:id", requireAuth, async (req, res): Promise<void> => {
   const params = UpdateItemParams.safeParse(req.params);
   if (!params.success) {
-    res.status(400).json({ error: params.error.message });
+    res.status(400).json({ error: "Некорректные данные запроса" });
     return;
   }
 
   const parsed = UpdateItemBody.safeParse(req.body);
   if (!parsed.success) {
-    res.status(400).json({ error: parsed.error.message });
+    res.status(400).json({ error: "Некорректные данные запроса" });
     return;
   }
 
+  const rawBody = req.body as Record<string, unknown>;
   const updates: Record<string, unknown> = {};
+  const requestedType = rawBody.type;
+  if (requestedType !== undefined) {
+    if (requestedType !== "note" && requestedType !== "file" && requestedType !== "reminder") {
+      res.status(400).json({ error: "РќРµРєРѕСЂСЂРµРєС‚РЅС‹Р№ С‚РёРї СЌР»РµРјРµРЅС‚Р°" });
+      return;
+    }
+    updates.type = requestedType;
+    if (requestedType === "note" && parsed.data.reminderAt === undefined) {
+      updates.reminderAt = null;
+    }
+  }
   if (parsed.data.title !== undefined) updates.title = parsed.data.title;
   if (parsed.data.content !== undefined) updates.content = parsed.data.content;
   if (parsed.data.folderId !== undefined) updates.folderId = parsed.data.folderId;
-  if (parsed.data.reminderAt !== undefined) updates.reminderAt = parsed.data.reminderAt ? new Date(parsed.data.reminderAt) : null;
+  if (parsed.data.reminderAt !== undefined) {
+    try {
+      updates.reminderAt = parseReminderDateTime(parsed.data.reminderAt);
+    } catch {
+      res.status(400).json({ error: "Некорректная дата напоминания" });
+      return;
+    }
+  }
   if (parsed.data.status !== undefined) updates.status = parsed.data.status;
+
+  if (parsed.data.folderId !== undefined && parsed.data.folderId !== null) {
+    const hasAccess = await folderBelongsToUser(req.auth!.userId, parsed.data.folderId);
+    if (!hasAccess) {
+      res.status(404).json({ error: "Папка не найдена" });
+      return;
+    }
+  }
 
   const [item] = await db.update(itemsTable)
     .set(updates)
@@ -168,7 +243,7 @@ router.patch("/items/:id", requireAuth, async (req, res): Promise<void> => {
     .returning();
 
   if (!item) {
-    res.status(404).json({ error: "Item not found" });
+    res.status(404).json({ error: "Элемент не найден" });
     return;
   }
 
@@ -179,7 +254,7 @@ router.patch("/items/:id", requireAuth, async (req, res): Promise<void> => {
 router.delete("/items/:id", requireAuth, async (req, res): Promise<void> => {
   const params = DeleteItemParams.safeParse(req.params);
   if (!params.success) {
-    res.status(400).json({ error: params.error.message });
+    res.status(400).json({ error: "Некорректные данные запроса" });
     return;
   }
 
@@ -188,7 +263,7 @@ router.delete("/items/:id", requireAuth, async (req, res): Promise<void> => {
     .returning();
 
   if (!item) {
-    res.status(404).json({ error: "Item not found" });
+    res.status(404).json({ error: "Элемент не найден" });
     return;
   }
 
@@ -199,18 +274,28 @@ router.delete("/items/:id", requireAuth, async (req, res): Promise<void> => {
 router.get("/search", requireAuth, async (req, res): Promise<void> => {
   const params = SearchItemsQueryParams.safeParse(req.query);
   if (!params.success) {
-    res.status(400).json({ error: params.error.message });
+    res.status(400).json({ error: "Некорректные данные запроса" });
     return;
   }
 
   const { q, type, folderId } = params.data;
+  const userId = req.auth!.userId;
+
+  if (folderId !== undefined && folderId !== null) {
+    const hasAccess = await folderBelongsToUser(userId, folderId);
+    if (!hasAccess) {
+      res.status(404).json({ error: "Папка не найдена" });
+      return;
+    }
+  }
 
   const conditions = [
-    eq(itemsTable.userId, req.auth!.userId),
+    eq(itemsTable.userId, userId),
     or(
       ilike(itemsTable.title, `%${q}%`),
       ilike(sql`coalesce(${itemsTable.content}, '')`, `%${q}%`),
-      ilike(sql`coalesce(${itemsTable.summary}, '')`, `%${q}%`)
+      ilike(sql`coalesce(${itemsTable.summary}, '')`, `%${q}%`),
+      ilike(sql`coalesce(${itemsTable.originalFilename}, '')`, `%${q}%`)
     )!,
   ];
 

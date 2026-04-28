@@ -1,0 +1,66 @@
+services:
+  db:
+    image: postgres:16
+    environment:
+      POSTGRES_USER: mindvault
+      POSTGRES_PASSWORD: mindvault
+      POSTGRES_DB: mindvault
+    ports:
+      - "5432:5432"
+    volumes:
+      - pg_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U mindvault -d mindvault"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile.local
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      PORT: 8080
+      NODE_ENV: development
+      SESSION_SECRET: dev-secret
+      DATABASE_URL: postgresql://mindvault:mindvault@db:5432/mindvault
+      OPENAI_BASE_URL: ${OPENAI_BASE_URL:-https://api.openai.com/v1}
+      OPENAI_MODEL: ${OPENAI_MODEL:-gpt-4.1-mini}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      OPENROUTER_BASE_URL: ${OPENROUTER_BASE_URL:-https://openrouter.ai/api/v1}
+      OPENROUTER_MODEL: ${OPENROUTER_MODEL:-openai/gpt-4o-mini}
+      OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:-}
+      OPENROUTER_SITE_URL: ${OPENROUTER_SITE_URL:-http://localhost:18174}
+      OPENROUTER_APP_NAME: ${OPENROUTER_APP_NAME:-MindVault}
+      ASSISTANT_SYSTEM_PROMPT: ${ASSISTANT_SYSTEM_PROMPT:-}
+    command:
+      - sh
+      - -lc
+      - pnpm --filter @workspace/db run push && pnpm --filter @workspace/api-server run dev
+    ports:
+      - "8080:8080"
+
+  web:
+    build:
+      context: .
+      dockerfile: Dockerfile.local
+    depends_on:
+      api:
+        condition: service_started
+    environment:
+      PORT: 18174
+      BASE_PATH: /
+      API_PROXY_TARGET: http://api:8080
+      NODE_ENV: development
+    command:
+      - sh
+      - -lc
+      - pnpm --filter @workspace/mindvault run dev
+    ports:
+      - "18174:18174"
+
+volumes:
+  pg_data:

@@ -181,6 +181,11 @@ export interface ClassifyContentBody {
    * @nullable
    */
   conversationId?: number | null;
+  /**
+   * Optional folder context
+   * @nullable
+   */
+  folderId?: number | null;
 }
 
 export type ClassifyContentResponseType =
