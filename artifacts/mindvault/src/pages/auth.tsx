@@ -76,14 +76,14 @@ export default function AuthPage() {
   };
 
   return (
-    <div className="min-h-screen flex items-center justify-center bg-slate-50 dark:bg-slate-950 p-4">
-      <div className="w-full max-w-md space-y-8">
+    <div className="min-h-dvh flex items-center justify-center bg-slate-50 dark:bg-slate-950 p-4">
+      <div className="w-full max-w-md space-y-6 sm:space-y-8">
         <div className="flex flex-col items-center justify-center space-y-3 text-center">
           <div className="w-12 h-12 bg-primary rounded-xl flex items-center justify-center shadow-lg shadow-primary/20">
             <Brain className="text-primary-foreground w-6 h-6" />
           </div>
           <div>
-            <h1 className="text-2xl font-bold tracking-tight">Добро пожаловать в MindVault</h1>
+            <h1 className="text-xl sm:text-2xl font-bold tracking-tight">Добро пожаловать в MindVault</h1>
             <p className="text-sm text-muted-foreground mt-1">
               Ваш интеллектуальный персональный рабочий кабинет.
             </p>

@@ -126,16 +126,16 @@ export default function NotesPage() {
   };
 
   return (
-    <div className="h-full flex flex-col p-6 bg-slate-50/50 dark:bg-transparent">
-      <div className="flex items-center justify-between mb-8">
+    <div className="h-full min-h-0 flex flex-col p-4 sm:p-6 bg-slate-50/50 dark:bg-transparent overflow-y-auto">
+      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 mb-6 sm:mb-8">
         <div>
-          <h1 className="text-3xl font-serif font-bold tracking-tight text-foreground">Заметки</h1>
+          <h1 className="text-2xl sm:text-3xl font-serif font-bold tracking-tight text-foreground">Заметки</h1>
           <p className="text-muted-foreground text-sm mt-1">Сохраняйте мысли, планы и идеи в одном месте.</p>
         </div>
 
         <Dialog open={isCreateOpen} onOpenChange={setIsCreateOpen}>
           <DialogTrigger asChild>
-            <Button className="shadow-md shadow-primary/20 gap-2">
+            <Button className="w-full sm:w-auto shadow-md shadow-primary/20 gap-2">
               <Plus className="w-4 h-4" />
               Новая заметка
             </Button>
@@ -189,7 +189,7 @@ export default function NotesPage() {
         </Dialog>
       </div>
 
-      <div className="relative mb-6 max-w-md">
+      <div className="relative mb-6 w-full max-w-md">
         <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
         <Input
           placeholder="Поиск по заметкам..."
@@ -212,11 +212,11 @@ export default function NotesPage() {
           <p className="text-sm opacity-70">Создайте первую заметку, чтобы начать работу.</p>
         </div>
       ) : (
-        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4 pb-12">
+        <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-4 pb-12">
           {filteredNotes.map((note) => (
             <Card
               key={note.id}
-              className="group hover:shadow-md transition-all cursor-pointer border-border/50 hover:border-primary/30 flex flex-col h-[240px]"
+              className="group hover:shadow-md transition-all cursor-pointer border-border/50 hover:border-primary/30 flex flex-col min-h-[240px]"
             >
               <CardHeader className="pb-3 px-5 pt-5 relative">
                 <div className="flex justify-between items-start">
@@ -277,7 +277,7 @@ export default function NotesPage() {
       )}
 
       <Dialog open={!!editingNote} onOpenChange={(open) => !open && setEditingNote(null)}>
-        <DialogContent className="sm:max-w-[700px] h-[80vh] flex flex-col">
+            <DialogContent className="w-[calc(100vw-2rem)] sm:max-w-[700px] h-[82dvh] flex flex-col">
           <DialogHeader className="shrink-0">
             <DialogTitle>Редактирование заметки</DialogTitle>
           </DialogHeader>
@@ -298,7 +298,7 @@ export default function NotesPage() {
             </div>
             <div className="space-y-2 shrink-0 pt-4 border-t border-border/50">
               <Select onValueChange={(value) => editForm.setValue("folderId", value)} value={editForm.watch("folderId")}>
-                <SelectTrigger className="w-[200px]">
+                <SelectTrigger className="w-full sm:w-[200px]">
                   <SelectValue placeholder="Выберите папку" />
                 </SelectTrigger>
                 <SelectContent>

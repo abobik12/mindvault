@@ -552,7 +552,7 @@ export default function FilesPage() {
   return (
     <div
       className={cn(
-        "h-full flex flex-col p-6 bg-slate-50/50 dark:bg-transparent overflow-y-auto transition-colors",
+        "h-full min-h-0 flex flex-col p-4 sm:p-6 bg-slate-50/50 dark:bg-transparent overflow-y-auto transition-colors",
         isDragging && "bg-primary/5",
       )}
       onDragOver={(event) => {
@@ -571,15 +571,15 @@ export default function FilesPage() {
       }}
       onDrop={handleFileDrop}
     >
-      <div className="flex flex-wrap items-center justify-between gap-4 mb-8 shrink-0">
+      <div className="flex flex-col sm:flex-row sm:flex-wrap sm:items-center justify-between gap-4 mb-6 sm:mb-8 shrink-0">
         <div>
-          <h1 className="text-3xl font-serif font-bold tracking-tight text-foreground">Файлы</h1>
+          <h1 className="text-2xl sm:text-3xl font-serif font-bold tracking-tight text-foreground">Файлы</h1>
           <p className="text-muted-foreground text-sm mt-1">Храните документы и медиа в одном разделе.</p>
         </div>
 
-        <div className="flex flex-wrap items-center gap-2">
+        <div className="flex flex-col sm:flex-row sm:flex-wrap items-stretch sm:items-center gap-2 w-full sm:w-auto">
           <Select value={uploadFolderId} onValueChange={setUploadFolderId}>
-            <SelectTrigger className="w-[220px]">
+            <SelectTrigger className="w-full sm:w-[220px]">
               <SelectValue placeholder="Папка для загрузки" />
             </SelectTrigger>
             <SelectContent>
@@ -594,7 +594,7 @@ export default function FilesPage() {
 
           <input type="file" className="hidden" ref={fileInputRef} onChange={handleFileUpload} />
           <Button
-            className="shadow-md shadow-primary/20 gap-2"
+            className="w-full sm:w-auto shadow-md shadow-primary/20 gap-2"
             onClick={() => fileInputRef.current?.click()}
             disabled={uploadFile.isPending}
           >
@@ -610,7 +610,7 @@ export default function FilesPage() {
         </div>
       )}
 
-      <div className="relative mb-6 max-w-md shrink-0">
+      <div className="relative mb-6 w-full max-w-md shrink-0">
         <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
         <Input
           placeholder="Поиск по имени и содержимому..."
@@ -633,7 +633,7 @@ export default function FilesPage() {
           <p className="text-sm opacity-70">Загрузите первый файл, чтобы начать работу.</p>
         </div>
       ) : (
-        <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 gap-4 pb-12">
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 xl:grid-cols-5 gap-4 pb-12">
           {filteredFiles.map((file) => {
             const Icon = getFileIcon(file.mimeType || "");
             const preview: FilePreview = previewMap.get(file.id) ?? { kind: "none", message: "Предпросмотр недоступен" };
@@ -641,11 +641,11 @@ export default function FilesPage() {
 
             return (
               <Card key={file.id} className="group hover:shadow-md transition-all border-border/50 hover:border-primary/30 flex flex-col">
-                <CardHeader className="pb-3 px-4 pt-4 relative">
+                <CardHeader className="pb-3 px-4 pt-4 relative min-w-0">
                   <div className="w-12 h-12 bg-primary/10 text-primary rounded-xl flex items-center justify-center mb-3">
                     <Icon className="w-6 h-6" />
                   </div>
-                  <CardTitle className="text-base leading-tight line-clamp-1 pr-6" title={file.originalFilename || file.title}>
+                  <CardTitle className="text-base leading-tight line-clamp-1 pr-6 min-w-0 break-all" title={file.originalFilename || file.title}>
                     {file.originalFilename || file.title}
                   </CardTitle>
                   <div className="absolute top-3 right-3 opacity-0 group-hover:opacity-100 transition-opacity flex gap-1">
@@ -678,7 +678,7 @@ export default function FilesPage() {
 
                 <CardContent className="flex-1 px-4 pb-4 space-y-3">
                   <div
-                    className="mx-auto h-32 w-32 shrink-0 rounded-lg border border-border/40 bg-muted/20 overflow-hidden"
+                    className="mx-auto h-32 w-full max-w-36 shrink-0 rounded-lg border border-border/40 bg-muted/20 overflow-hidden"
                   >
                     {preview.kind === "image" && !imagePreviewFailed && (
                       <img
@@ -761,7 +761,7 @@ export default function FilesPage() {
 
                   <Select
                     value={file.folderId ? String(file.folderId) : "none"}
-                    onValueChange={(value) => handleMoveFile(file.id, value, file.folderId)}
+                    onValueChange={(value) => handleMoveFile(file.id, value, file.folderId ?? null)}
                   >
                     <SelectTrigger className="h-8 text-xs">
                       <SelectValue placeholder="Переместить в папку" />

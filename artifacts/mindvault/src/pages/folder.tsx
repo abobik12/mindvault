@@ -84,6 +84,7 @@ export default function FolderPage() {
 
   const { data: folder, isLoading: isFolderLoading, isError: isFolderError } = useGetFolder(folderId, {
     query: {
+      queryKey: getGetFolderQueryKey(folderId),
       enabled: isFolderIdValid,
       retry: false,
     },
@@ -91,6 +92,7 @@ export default function FolderPage() {
 
   const { data: folders = [] } = useListFolders({
     query: {
+      queryKey: getListFoldersQueryKey(),
       enabled: !!folder,
     },
   });
@@ -99,6 +101,7 @@ export default function FolderPage() {
     isFolderIdValid ? { folderId } : undefined,
     {
       query: {
+        queryKey: getListItemsQueryKey(isFolderIdValid ? { folderId } : undefined),
         enabled: !!folder,
       },
     },
@@ -332,7 +335,7 @@ export default function FolderPage() {
 
   if (!isFolderIdValid) {
     return (
-      <div className="h-full p-6 flex items-center justify-center">
+      <div className="h-full p-4 sm:p-6 flex items-center justify-center">
         <Card className="max-w-md w-full border-border/50">
           <CardContent className="p-6 text-center space-y-3">
             <p className="text-lg font-semibold">Неверный адрес папки</p>
@@ -354,7 +357,7 @@ export default function FolderPage() {
 
   if (isFolderError || !folder) {
     return (
-      <div className="h-full p-6 flex items-center justify-center">
+      <div className="h-full p-4 sm:p-6 flex items-center justify-center">
         <Card className="max-w-md w-full border-border/50">
           <CardContent className="p-6 text-center space-y-3">
             <p className="text-lg font-semibold">Папка не найдена</p>
@@ -369,19 +372,19 @@ export default function FolderPage() {
   }
 
   return (
-    <div className="h-full flex flex-col p-6 bg-slate-50/50 dark:bg-transparent overflow-y-auto">
-      <div className="flex flex-wrap items-center justify-between gap-4 mb-6">
+    <div className="h-full min-h-0 flex flex-col p-4 sm:p-6 bg-slate-50/50 dark:bg-transparent overflow-y-auto">
+      <div className="flex flex-col sm:flex-row sm:flex-wrap sm:items-center justify-between gap-4 mb-6">
         <div>
-          <h1 className="text-3xl font-serif font-bold tracking-tight text-foreground flex items-center gap-2">
+          <h1 className="text-2xl sm:text-3xl font-serif font-bold tracking-tight text-foreground flex items-center gap-2 min-w-0">
             <FolderIcon className="w-7 h-7 text-primary" />
-            {folder.name}
+            <span className="truncate">{folder.name}</span>
           </h1>
           <p className="text-muted-foreground text-sm mt-1">
             В папке {folder.itemCount} {folder.itemCount === 1 ? "объект" : folder.itemCount < 5 ? "объекта" : "объектов"}
           </p>
         </div>
 
-        <div className="flex flex-wrap gap-2">
+        <div className="flex flex-col sm:flex-row sm:flex-wrap gap-2 w-full sm:w-auto">
           <Dialog open={isCreateNoteOpen} onOpenChange={setIsCreateNoteOpen}>
             <DialogTrigger asChild>
               <Button variant="outline" className="gap-2">
@@ -451,7 +454,7 @@ export default function FolderPage() {
         </div>
       </div>
 
-      <div className="relative mb-4 max-w-md">
+      <div className="relative mb-4 w-full max-w-md">
         <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
         <Input
           placeholder="Поиск внутри папки"
@@ -514,17 +517,17 @@ export default function FolderPage() {
                           <Badge variant="outline">Выполнено</Badge>
                         )}
                         {item.type === "file" && (
-                          <Badge variant="outline">{getFileTypeSuffix(item.mimeType)}</Badge>
+                          <Badge variant="outline">{getFileTypeSuffix(item.mimeType ?? null)}</Badge>
                         )}
                       </div>
                     </div>
 
-                    <div className="flex flex-wrap items-center gap-2">
+                    <div className="flex flex-col sm:flex-row sm:flex-wrap items-stretch sm:items-center gap-2 w-full sm:w-auto">
                       <Select
                         value={item.folderId ? String(item.folderId) : "none"}
-                        onValueChange={(value) => onMoveItem(item.id, value, item.folderId)}
+                        onValueChange={(value) => onMoveItem(item.id, value, item.folderId ?? null)}
                       >
-                        <SelectTrigger className="w-[180px] h-8">
+                        <SelectTrigger className="w-full sm:w-[180px] h-8">
                           <SelectValue placeholder="Переместить" />
                         </SelectTrigger>
                         <SelectContent>

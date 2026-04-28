@@ -72,13 +72,13 @@ export default function SettingsPage() {
   }
 
   return (
-    <div className="h-full flex flex-col p-6 bg-slate-50/50 dark:bg-transparent overflow-y-auto">
-      <div className="mb-8 shrink-0">
-        <h1 className="text-3xl font-serif font-bold tracking-tight text-foreground">Настройки</h1>
+    <div className="h-full min-h-0 flex flex-col p-4 sm:p-6 bg-slate-50/50 dark:bg-transparent overflow-y-auto">
+      <div className="mb-6 sm:mb-8 shrink-0">
+        <h1 className="text-2xl sm:text-3xl font-serif font-bold tracking-tight text-foreground">Настройки</h1>
         <p className="text-muted-foreground text-sm mt-1">Управляйте профилем и просматривайте статистику рабочего кабинета.</p>
       </div>
 
-      <div className="max-w-4xl mx-auto w-full grid grid-cols-1 lg:grid-cols-3 gap-8 pb-12">
+      <div className="max-w-4xl mx-auto w-full grid grid-cols-1 lg:grid-cols-3 gap-6 lg:gap-8 pb-12 min-w-0">
         <div className="lg:col-span-1 space-y-6">
           <Card className="border-border/50 shadow-sm overflow-hidden">
             <div className="h-24 bg-primary/10 w-full relative">
@@ -141,7 +141,7 @@ export default function SettingsPage() {
         <div className="lg:col-span-2 space-y-6">
           <h3 className="text-lg font-semibold tracking-tight">Обзор рабочего кабинета</h3>
 
-          <div className="grid grid-cols-2 sm:grid-cols-4 gap-4">
+          <div className="grid grid-cols-1 min-[380px]:grid-cols-2 sm:grid-cols-4 gap-4">
             <Card className="border-border/50 shadow-sm">
               <CardContent className="p-4 flex flex-col items-center text-center">
                 <div className="w-10 h-10 bg-primary/10 text-primary rounded-full flex items-center justify-center mb-2">
@@ -190,7 +190,7 @@ export default function SettingsPage() {
               ) : (
                 <div className="divide-y divide-border/50">
                   {recentItems.map((item) => (
-                    <div key={item.id} className="p-4 flex items-start gap-4 hover:bg-muted/50 transition-colors">
+                    <div key={item.id} className="p-4 flex flex-col sm:flex-row sm:items-start gap-3 sm:gap-4 hover:bg-muted/50 transition-colors">
                       <div className="w-8 h-8 rounded-full bg-card border border-border/50 flex items-center justify-center shrink-0">
                         {item.type === "note" && <FileText className="w-4 h-4 text-primary" />}
                         {item.type === "file" && <HardDrive className="w-4 h-4 text-secondary" />}
@@ -204,7 +204,7 @@ export default function SettingsPage() {
                           {item.type === "reminder" && "Создано напоминание"}
                         </span>
                       </div>
-                      <div className="text-xs text-muted-foreground shrink-0">{formatMoscowDateTime(item.updatedAt)}</div>
+                      <div className="text-xs text-muted-foreground shrink-0 sm:text-right">{formatMoscowDateTime(item.updatedAt)}</div>
                     </div>
                   ))}
                 </div>

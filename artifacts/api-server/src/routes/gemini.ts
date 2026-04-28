@@ -95,7 +95,7 @@ function sanitizeAssistantContext(raw: unknown): AssistantContext {
     return null;
   }
 
-  let savedItem: AssistantContext["savedItem"] = null;
+  let savedItem: NonNullable<AssistantContext>["savedItem"] = null;
   const rawSavedItem = source.savedItem;
   if (rawSavedItem && typeof rawSavedItem === "object") {
     const item = rawSavedItem as Record<string, unknown>;
@@ -441,7 +441,7 @@ router.post("/gemini/conversations/:id/messages", requireAuth, async (req, res):
       conversation.id,
       {
         maxRecentItems: 8,
-        maxSearchResults: 5,
+        maxSearchResults: 20,
         includeArchived: false,
       },
     );

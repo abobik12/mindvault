@@ -1,71 +1,120 @@
-import { and, eq, desc, like, or, sql } from "drizzle-orm";
-import { db, itemsTable, foldersTable, type Item } from "@workspace/db";
+import { and, desc, eq, inArray, sql } from "drizzle-orm";
+import { conversations, db, foldersTable, itemsTable, messages, type Item } from "@workspace/db";
 import { logger } from "./logger";
 
+type SourceType = "folder" | "note" | "file" | "reminder" | "message";
+
 export interface UserContextData {
+  overview: {
+    folderCount: number;
+    noteCount: number;
+    fileCount: number;
+    reminderCount: number;
+  };
   folders: Array<{
     id: number;
     name: string;
     itemCount: number;
   }>;
-  recentNotes: Array<{
-    title: string;
-    excerpt: string;
-    folder: string;
-    date: string;
-  }>;
-  recentFiles: Array<{
-    title: string;
-    filename: string;
-    mimeType: string;
-    size: string;
-    folder: string;
-    date: string;
-    preview?: string;
-  }>;
-  upcomingReminders: Array<{
-    title: string;
-    dueDate: string;
-    status: string;
-    folder: string;
-  }>;
-  relevantItems: Array<{
-    type: "note" | "file" | "reminder";
-    title: string;
-    folder: string;
-    date: string;
-    excerpt: string;
-  }>;
+  recentNotes: Array<ContextItem>;
+  recentFiles: Array<ContextItem & { filename: string; mimeType: string; size: string }>;
+  upcomingReminders: Array<ContextItem & { dueDate: string; status: string }>;
+  relevantSources: Array<RelevantSource>;
 }
 
-/**
- * Simple relevance search - looks for keywords in item title and content
- */
-function searchRelevance(query: string, item: Item): number {
-  if (!query.trim()) return 0;
-
-  const queryWords = query.toLowerCase().split(/\s+/).filter(Boolean);
-  const titleLower = item.title.toLowerCase();
-  const contentLower = (item.content || "").toLowerCase();
-
-  let score = 0;
-
-  // Exact title match = high score
-  if (titleLower === query.toLowerCase()) score += 100;
-  else if (titleLower.includes(query.toLowerCase())) score += 50;
-
-  // Word matches in title
-  for (const word of queryWords) {
-    if (titleLower.includes(word)) score += 10;
-    if (contentLower.includes(word)) score += 5;
-  }
-
-  return score;
+interface ContextItem {
+  type: Extract<SourceType, "note" | "file" | "reminder">;
+  title: string;
+  folder: string;
+  date: string;
+  excerpt: string;
 }
 
-/**
- * Format file size for display
- */
+interface RelevantSource {
+  type: SourceType;
+  title: string;
+  folder?: string;
+  date?: string;
+  excerpt: string;
+  score: number;
+}
+
+const SEARCH_STOP_WORDS = new Set([
+  "что",
+  "где",
+  "как",
+  "когда",
+  "какие",
+  "какая",
+  "какой",
+  "меня",
+  "мои",
+  "мой",
+  "моя",
+  "мое",
+  "мною",
+  "про",
+  "для",
+  "или",
+  "это",
+  "найди",
+  "найти",
+  "покажи",
+  "скажи",
+  "перескажи",
+  "сохраненных",
+  "сохраненные",
+  "данных",
+]);
+
+const SAVED_DATA_QUERY_RE =
+  /(сохранял|сохраненн|заметк|файл|папк|напомин|найди|покажи|перескажи|что у меня|какие у меня|в моих|из моих|mindvault|баз[аеы] знаний)/i;
+
+function normalizeText(value: string): string {
+  return value.toLowerCase().replace(/ё/g, "е");
+}
+
+function getSearchTerms(query: string): string[] {
+  const normalized = normalizeText(query);
+  return Array.from(
+    new Set(
+      normalized
+        .split(/[^\p{L}\p{N}_-]+/u)
+        .map((word) => word.trim())
+        .filter((word) => word.length > 2 && !SEARCH_STOP_WORDS.has(word)),
+    ),
+  ).slice(0, 16);
+}
+
+function truncateText(value: string | null | undefined, maxLength: number): string {
+  const normalized = (value ?? "").replace(/\s+/g, " ").trim();
+  if (!normalized) return "";
+  return normalized.length > maxLength ? `${normalized.slice(0, maxLength - 1)}...` : normalized;
+}
+
+function formatDate(value: Date | null | undefined): string {
+  return value
+    ? value.toLocaleDateString("ru-RU", {
+        year: "numeric",
+        month: "short",
+        day: "numeric",
+      })
+    : "дата не указана";
+}
+
+function formatDateTime(value: Date | null | undefined): string {
+  return value
+    ? value.toLocaleString("ru-RU", {
+        timeZone: "Europe/Moscow",
+        year: "numeric",
+        month: "short",
+        day: "numeric",
+        hour: "2-digit",
+        minute: "2-digit",
+      })
+    : "дата не указана";
+}
+
 function formatFileSize(bytes: number | null | undefined): string {
   if (!bytes || bytes <= 0) return "0 B";
   const units = ["B", "KB", "MB", "GB"];
@@ -74,50 +123,76 @@ function formatFileSize(bytes: number | null | undefined): string {
 
   while (size >= 1024 && unitIndex < units.length - 1) {
     size /= 1024;
-    unitIndex++;
+    unitIndex += 1;
   }
 
   return `${Math.round(size * 10) / 10} ${units[unitIndex]}`;
 }
 
-/**
- * Decode base64 file data safely and extract text preview
- */
-function extractTextPreview(
-  fileData: string | null | undefined,
-  mimeType: string | null | undefined,
-  content: string | null | undefined,
-  filename: string | null | undefined,
-): string {
-  // If there's already extracted content, use it
-  if (content?.trim()) {
-    const preview = content.substring(0, 150);
-    return preview.length === 150 ? preview + "..." : preview;
-  }
+function isTextLikeFile(mimeType: string | null | undefined, filename: string | null | undefined): boolean {
+  const mime = (mimeType ?? "").toLowerCase();
+  const extension = (filename ?? "").split(".").pop()?.toLowerCase() ?? "";
+  const textExtensions = new Set(["txt", "md", "csv", "json", "xml", "yml", "yaml", "log", "html", "css", "js", "ts"]);
+  return mime.startsWith("text/") || mime.includes("json") || mime.includes("xml") || textExtensions.has(extension);
+}
 
-  // If it's a text file, try to decode base64
-  if (mimeType && fileData && /^text\/|json|xml/i.test(mimeType)) {
+function extractTextPreview(item: Item, maxLength = 900): string {
+  if (item.content?.trim()) return truncateText(item.content, maxLength);
+
+  if (item.type === "file" && item.fileData && isTextLikeFile(item.mimeType, item.originalFilename ?? item.title)) {
     try {
-      const decoded = Buffer.from(fileData, "base64").toString("utf-8");
-      const preview = decoded.substring(0, 150);
-      return preview.length === 150 ? preview + "..." : preview;
+      const decoded = Buffer.from(item.fileData, "base64").toString("utf8");
+      const cleaned = decoded.replace(/\u0000/g, "").trim();
+      const suspiciousChars = cleaned.match(/[\u0001-\u0008\u000B\u000C\u000E-\u001F\u007F-\u009F]/g)?.length ?? 0;
+      if (cleaned && suspiciousChars / cleaned.length < 0.02) {
+        return truncateText(cleaned, maxLength);
+      }
     } catch (err) {
-      logger.debug({ err }, "Could not decode file preview");
+      logger.debug({ err, itemId: item.id }, "Could not decode text preview for assistant context");
     }
   }
 
-  // Fallback: filename and mime type
-  if (filename || mimeType) {
-    return `Файл: ${filename || "unnamed"} (${mimeType || "unknown"})`;
+  if (item.type === "file") {
+    return truncateText(
+      [item.originalFilename ?? item.title, item.mimeType, formatFileSize(item.fileSize)].filter(Boolean).join(", "),
+      maxLength,
+    );
   }
 
-  return "Содержимое недоступно";
+  return "(пустое содержимое)";
 }
 
-/**
- * Build comprehensive user context for AI
- * Fetches folders, recent items, and searches for relevant items based on current message
- */
+function scoreText(query: string, terms: string[], fields: Array<{ value: string; weight: number }>): number {
+  if (!query.trim() || terms.length === 0) return 0;
+
+  const normalizedQuery = normalizeText(query);
+  let score = 0;
+
+  for (const field of fields) {
+    const value = normalizeText(field.value);
+    if (!value) continue;
+    if (value === normalizedQuery) score += 120 * field.weight;
+    if (value.includes(normalizedQuery)) score += 45 * field.weight;
+
+    for (const term of terms) {
+      if (value.includes(term)) score += 8 * field.weight;
+    }
+  }
+
+  return score;
+}
+
+function scoreItem(query: string, terms: string[], item: Item, folderName: string): number {
+  return scoreText(query, terms, [
+    { value: item.title, weight: 3 },
+    { value: item.originalFilename ?? "", weight: 3 },
+    { value: folderName, weight: 2 },
+    { value: item.summary ?? "", weight: 2 },
+    { value: item.content ?? "", weight: 1 },
+    { value: item.type, weight: 1 },
+  ]);
+}
+
 export async function buildAssistantContext(
   userId: number,
   currentMessage: string,
@@ -129,202 +204,250 @@ export async function buildAssistantContext(
   },
 ): Promise<UserContextData> {
   const maxRecentItems = options?.maxRecentItems ?? 10;
-  const maxSearchResults = options?.maxSearchResults ?? 5;
+  const maxSearchResults = options?.maxSearchResults ?? 20;
   const includeArchived = options?.includeArchived ?? false;
 
   try {
-    // 1. Fetch user folders with item counts
     const folders = await db.select().from(foldersTable).where(eq(foldersTable.userId, userId));
+    const folderMap = new Map(folders.map((folder) => [folder.id, folder.name]));
 
-    const folderCounts: Record<number, number> = {};
-    const baseConditions = [eq(itemsTable.userId, userId)];
-    if (!includeArchived) {
-      baseConditions.push(eq(itemsTable.status, "active"));
-    }
+    const itemConditions = [eq(itemsTable.userId, userId)];
+    if (!includeArchived) itemConditions.push(eq(itemsTable.status, "active"));
 
-    for (const folder of folders) {
-      const [countResult] = await db
-        .select({ count: sql<number>`count(*)` })
-        .from(itemsTable)
-        .where(and(...baseConditions, eq(itemsTable.folderId, folder.id)));
-      folderCounts[folder.id] = countResult?.count ?? 0;
-    }
-
-    const userFolders = folders.map((f) => ({
-      id: f.id,
-      name: f.name,
-      itemCount: folderCounts[f.id] ?? 0,
-    }));
-
-    // 2. Fetch all user items (will filter below)
     const allItems = await db
       .select()
       .from(itemsTable)
-      .where(and(...baseConditions))
+      .where(and(...itemConditions))
       .orderBy(desc(itemsTable.updatedAt))
-      .limit(1000); // reasonable limit to avoid memory issues
+      .limit(1000);
 
-    // 3. Filter by type and build summaries
+    const folderCounts = new Map<number, number>();
+    for (const item of allItems) {
+      if (item.folderId) {
+        folderCounts.set(item.folderId, (folderCounts.get(item.folderId) ?? 0) + 1);
+      }
+    }
+
+    const userFolders = folders.map((folder) => ({
+      id: folder.id,
+      name: folder.name,
+      itemCount: folderCounts.get(folder.id) ?? 0,
+    }));
+
     const notes = allItems.filter((item) => item.type === "note");
     const files = allItems.filter((item) => item.type === "file");
     const reminders = allItems.filter((item) => item.type === "reminder");
 
-    const folderMap = new Map(folders.map((f) => [f.id, f.name]));
-
     const recentNotes = notes.slice(0, maxRecentItems).map((item) => ({
+      type: "note" as const,
       title: item.title,
-      excerpt: item.content ? item.content.substring(0, 100) : "(пусто)",
-      folder: folderMap.get(item.folderId) || "Без папки",
-      date: item.updatedAt?.toLocaleDateString("ru-RU") ?? "неизвестно",
+      excerpt: extractTextPreview(item, 280),
+      folder: folderMap.get(item.folderId ?? 0) ?? "Без папки",
+      date: formatDate(item.updatedAt),
     }));
 
     const recentFiles = files.slice(0, maxRecentItems).map((item) => ({
+      type: "file" as const,
       title: item.title,
-      filename: item.originalFilename || "unknown",
-      mimeType: item.mimeType || "application/octet-stream",
+      filename: item.originalFilename ?? item.title,
+      mimeType: item.mimeType ?? "application/octet-stream",
       size: formatFileSize(item.fileSize),
-      folder: folderMap.get(item.folderId) || "Без папки",
-      date: item.updatedAt?.toLocaleDateString("ru-RU") ?? "неизвестно",
-      preview: extractTextPreview(item.fileData, item.mimeType, item.content, item.originalFilename),
+      folder: folderMap.get(item.folderId ?? 0) ?? "Без папки",
+      date: formatDate(item.updatedAt),
+      excerpt: extractTextPreview(item, 360),
     }));
 
-    // 4. Fetch upcoming reminders (next 30 days or active ones)
     const now = new Date();
-    const thirtyDaysFromNow = new Date(now.getTime() + 30 * 24 * 60 * 60 * 1000);
-
     const upcomingReminders = reminders
-      .filter((r) => {
-        if (!r.reminderAt) return r.status !== "completed";
-        return r.reminderAt > now && r.reminderAt <= thirtyDaysFromNow;
-      })
+      .filter((item) => item.status !== "completed" && (!item.reminderAt || item.reminderAt >= now))
       .slice(0, maxRecentItems)
       .map((item) => ({
+        type: "reminder" as const,
         title: item.title,
-        dueDate: item.reminderAt?.toLocaleDateString("ru-RU", {
-          year: "numeric",
-          month: "long",
-          day: "numeric",
-          hour: "2-digit",
-          minute: "2-digit",
-        }) ?? "без даты",
+        dueDate: formatDateTime(item.reminderAt),
         status: item.status,
-        folder: folderMap.get(item.folderId) || "Без папки",
+        folder: folderMap.get(item.folderId ?? 0) ?? "Без папки",
+        date: formatDate(item.updatedAt),
+        excerpt: extractTextPreview(item, 220),
       }));
 
-    // 5. Search for relevant items based on current message
-    const relevantItems: Array<{
-      type: "note" | "file" | "reminder";
-      title: string;
-      folder: string;
-      date: string;
-      excerpt: string;
-    }> = [];
+    const conversationRows = await db
+      .select({ id: conversations.id })
+      .from(conversations)
+      .where(eq(conversations.userId, userId))
+      .orderBy(desc(conversations.updatedAt))
+      .limit(50);
+    const conversationIds = conversationRows.map((conversation) => conversation.id);
 
-    if (currentMessage.trim().length > 0) {
-      const scored = allItems.map((item) => ({
-        item,
-        score: searchRelevance(currentMessage, item),
-      }));
+    const recentMessages =
+      conversationIds.length > 0
+        ? await db
+            .select({
+              id: messages.id,
+              conversationId: messages.conversationId,
+              role: messages.role,
+              content: messages.content,
+              createdAt: messages.createdAt,
+            })
+            .from(messages)
+            .where(inArray(messages.conversationId, conversationIds))
+            .orderBy(desc(messages.createdAt))
+            .limit(400)
+        : [];
 
-      const topRelevant = scored
-        .filter((s) => s.score > 0)
-        .sort((a, b) => b.score - a.score)
-        .slice(0, maxSearchResults);
+    const terms = getSearchTerms(currentMessage);
+    const relevantSources: RelevantSource[] = [];
 
-      for (const { item } of topRelevant) {
-        relevantItems.push({
+    for (const folder of userFolders) {
+      const score = scoreText(currentMessage, terms, [{ value: folder.name, weight: 4 }]);
+      if (score > 0) {
+        relevantSources.push({
+          type: "folder",
+          title: folder.name,
+          excerpt: `Папка пользователя, объектов: ${folder.itemCount}`,
+          score,
+        });
+      }
+    }
+
+    for (const item of allItems) {
+      const folder = folderMap.get(item.folderId ?? 0) ?? "Без папки";
+      const score = scoreItem(currentMessage, terms, item, folder);
+      if (score > 0) {
+        relevantSources.push({
           type: item.type,
-          title: item.title,
-          folder: folderMap.get(item.folderId) || "Без папки",
-          date: item.updatedAt?.toLocaleDateString("ru-RU") ?? "неизвестно",
-          excerpt:
-            item.type === "file"
-              ? extractTextPreview(item.fileData, item.mimeType, item.content, item.originalFilename)
-              : item.content
-                ? item.content.substring(0, 100)
-                : "(пусто)",
+          title: item.type === "file" ? item.originalFilename ?? item.title : item.title,
+          folder,
+          date: formatDate(item.updatedAt),
+          excerpt: extractTextPreview(item),
+          score,
+        });
+      }
+    }
+
+    for (const message of recentMessages) {
+      if (conversationId && message.conversationId === conversationId) continue;
+      const score = scoreText(currentMessage, terms, [{ value: message.content, weight: 1 }]);
+      if (score > 0) {
+        relevantSources.push({
+          type: "message",
+          title: message.role === "assistant" ? "Ответ ассистента из другого чата" : "Сообщение пользователя из другого чата",
+          date: formatDate(message.createdAt),
+          excerpt: truncateText(message.content, 500),
+          score,
         });
       }
     }
 
     return {
+      overview: {
+        folderCount: folders.length,
+        noteCount: notes.length,
+        fileCount: files.length,
+        reminderCount: reminders.length,
+      },
       folders: userFolders,
       recentNotes,
       recentFiles,
       upcomingReminders,
-      relevantItems,
+      relevantSources: relevantSources
+        .sort((a, b) => b.score - a.score)
+        .slice(0, maxSearchResults),
     };
   } catch (err) {
     logger.error({ err }, "Failed to build assistant context");
     return {
+      overview: { folderCount: 0, noteCount: 0, fileCount: 0, reminderCount: 0 },
       folders: [],
       recentNotes: [],
       recentFiles: [],
       upcomingReminders: [],
-      relevantItems: [],
+      relevantSources: [],
     };
   }
 }
 
-/**
- * Format user context into a readable string for the AI
- */
-export function formatContextForPrompt(context: UserContextData, includeEverything: boolean = false): string {
+export function formatContextForPrompt(context: UserContextData, includeEverything = false): string {
   const sections: string[] = [];
 
-  // Folders overview
-  if (context.folders.length > 0) {
-    const folderList = context.folders.map((f) => `• ${f.name} (${f.itemCount} объектов)`).join("\n");
-    sections.push(`📁 **Папки пользователя:**\n${folderList}`);
-  }
+  sections.push(
+    [
+      "Overview:",
+      `- Folders: ${context.overview.folderCount}`,
+      `- Notes: ${context.overview.noteCount}`,
+      `- Files: ${context.overview.fileCount}`,
+      `- Reminders: ${context.overview.reminderCount}`,
+    ].join("\n"),
+  );
 
-  // Relevant items (if found)
-  if (context.relevantItems.length > 0) {
-    const relevantList = context.relevantItems
-      .map(
-        (item) =>
-          `• [${item.type}] ${item.title} (${item.folder})\n  ${item.excerpt}`,
-      )
-      .join("\n");
+  if (context.folders.length > 0) {
     sections.push(
-      `🔍 **Релевантные элементы из базы знаний:**\n${relevantList}\n(Используй эти данные в ответе)`,
+      [
+        "Folders:",
+        ...context.folders
+          .slice(0, 30)
+          .map((folder) => `- ${folder.name} (${folder.itemCount} objects)`),
+      ].join("\n"),
     );
   }
 
-  // Recent items (if no relevant items or if including everything)
-  if (includeEverything || context.relevantItems.length === 0) {
+  if (context.relevantSources.length > 0) {
+    sections.push(
+      [
+        "Relevant sources found by MindVault search:",
+        ...context.relevantSources.map((source, index) => {
+          const folder = source.folder ? `, folder: ${source.folder}` : "";
+          const date = source.date ? `, date: ${source.date}` : "";
+          return `${index + 1}. [${source.type}] ${source.title}${folder}${date}\n   ${source.excerpt}`;
+        }),
+      ].join("\n"),
+    );
+  }
+
+  if (includeEverything || context.relevantSources.length === 0) {
     if (context.recentNotes.length > 0) {
-      const notesList = context.recentNotes
-        .map((n) => `• ${n.title} (${n.folder})\n  ${n.excerpt}`)
-        .join("\n");
-      sections.push(`📝 **Последние заметки:**\n${notesList}`);
+      sections.push(
+        [
+          "Recent notes:",
+          ...context.recentNotes.map((note) => `- ${note.title} (${note.folder}, ${note.date}): ${note.excerpt}`),
+        ].join("\n"),
+      );
     }
 
     if (context.recentFiles.length > 0) {
-      const filesList = context.recentFiles
-        .map((f) => `• ${f.title} (${f.filename}, ${f.size})\n  ${f.preview}`)
-        .join("\n");
-      sections.push(`📄 **Последние файлы:**\n${filesList}`);
+      sections.push(
+        [
+          "Recent files:",
+          ...context.recentFiles.map(
+            (file) =>
+              `- ${file.filename} (${file.mimeType}, ${file.size}, ${file.folder}, ${file.date}): ${file.excerpt}`,
+          ),
+        ].join("\n"),
+      );
     }
 
     if (context.upcomingReminders.length > 0) {
-      const remindersList = context.upcomingReminders
-        .map((r) => `• ${r.title} — ${r.dueDate} (${r.folder})`)
-        .join("\n");
-      sections.push(`⏰ **Ближайшие напоминания:**\n${remindersList}`);
+      sections.push(
+        [
+          "Upcoming reminders:",
+          ...context.upcomingReminders.map(
+            (reminder) => `- ${reminder.title}: ${reminder.dueDate} (${reminder.folder})`,
+          ),
+        ].join("\n"),
+      );
     }
   }
 
-  if (sections.length === 0) {
-    return "";
-  }
+  const asksAboutSavedData = SAVED_DATA_QUERY_RE.toString();
 
   return (
     "\n\n---\n" +
-    "**📚 Контекст из MindVault (личная база знаний пользователя):**\n\n" +
+    "MindVault private user context. This data belongs only to the current authenticated user.\n" +
+    "Use it when it is relevant to the user's question. Do not expose raw JSON or database details.\n" +
+    "When you rely on saved notes, files, folders, reminders, or old chat messages, briefly name the source titles.\n" +
+    "If the user asks about saved data and the relevant sources section is empty, say in Russian: \"В сохраненных данных я не нашел ничего похожего.\" Do not invent saved content.\n" +
+    `Saved-data query detector used by the app: ${asksAboutSavedData}\n\n` +
     sections.join("\n\n") +
-    "\n\nИспользуй этот контекст при ответе, если он релевантен вопросу.\n" +
-    "Если пользователь спрашивает о сохраненных данных, опирайся на информацию выше.\n" +
-    "Если данных нет или они не подходят, скажи честно, что такой информации не найдено в базе."
+    "\n---\n"
   );
 }

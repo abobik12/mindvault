@@ -14,11 +14,14 @@ import {
   MoreHorizontal,
   Pencil,
   Trash2,
+  Menu,
 } from "lucide-react";
 import {
   useGetMe,
+  getGetMeQueryKey,
   useListFolders,
   useGetUpcomingReminders,
+  getGetUpcomingRemindersQueryKey,
   useCreateFolder,
   useUpdateFolder,
   useDeleteFolder,
@@ -62,6 +65,7 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
+import { Sheet, SheetContent, SheetTrigger } from "@/components/ui/sheet";
 
 const folderSchema = z.object({
   name: z.string().min(1, "Введите название папки"),
@@ -89,9 +93,11 @@ export default function Layout({ children }: { children: React.ReactNode }) {
   const [isRenameFolderOpen, setIsRenameFolderOpen] = useState(false);
   const [deletingFolder, setDeletingFolder] = useState<{ id: number; name: string } | null>(null);
   const [renamingFolder, setRenamingFolder] = useState<{ id: number; name: string } | null>(null);
+  const [isMobileNavOpen, setIsMobileNavOpen] = useState(false);
 
   const { data: user, isLoading: isUserLoading, isError: isUserError } = useGetMe({
     query: {
+      queryKey: getGetMeQueryKey(),
       retry: false,
     },
   });
@@ -103,9 +109,11 @@ export default function Layout({ children }: { children: React.ReactNode }) {
     }
   }, [isUserError, setLocation]);
 
-  const { data: folders = [] } = useListFolders({ query: { enabled: !!user } });
-  const { data: upcomingReminders = [] } = useGetUpcomingReminders({
-    query: { enabled: !!user },
+  const { data: folders = [] } = useListFolders({
+    query: { queryKey: getListFoldersQueryKey(), enabled: !!user },
+  });
+  const { data: upcomingReminders = [] } = useGetUpcomingReminders(undefined, {
+    query: { queryKey: getGetUpcomingRemindersQueryKey(), enabled: !!user },
   });
 
   const createFolderForm = useForm<z.infer<typeof folderSchema>>({
@@ -213,7 +221,7 @@ export default function Layout({ children }: { children: React.ReactNode }) {
 
   if (isUserLoading) {
     return (
-      <div className="h-screen w-full flex items-center justify-center">
+      <div className="h-dvh w-full flex items-center justify-center">
         <Loader2 className="w-8 h-8 animate-spin text-primary" />
       </div>
     );
@@ -224,8 +232,8 @@ export default function Layout({ children }: { children: React.ReactNode }) {
   const userFolders = folders.filter((folder) => !folder.isSystem);
 
   return (
-    <div className="flex h-screen bg-background overflow-hidden text-foreground">
-      <aside className="w-64 border-r border-border bg-sidebar/50 backdrop-blur-xl flex flex-col hidden md:flex">
+    <div className="flex h-dvh bg-background overflow-hidden text-foreground">
+      <aside className="w-64 border-r border-border bg-sidebar/50 backdrop-blur-xl flex-col hidden lg:flex">
         <div className="h-16 px-6 flex items-center gap-3 border-b border-border/50">
           <div className="w-8 h-8 bg-primary rounded-lg flex items-center justify-center shadow-md shadow-primary/20">
             <Brain className="text-primary-foreground w-5 h-5" />
@@ -503,7 +511,138 @@ export default function Layout({ children }: { children: React.ReactNode }) {
         </AlertDialogContent>
       </AlertDialog>
 
-      <main className="flex-1 flex flex-col overflow-hidden relative">{children}</main>
+      <main className="flex-1 min-w-0 flex flex-col overflow-hidden relative">
+        <header className="lg:hidden h-14 shrink-0 border-b border-border/50 bg-sidebar/80 backdrop-blur-xl px-4 flex items-center justify-between">
+          <div className="flex items-center gap-3 min-w-0">
+            <div className="w-8 h-8 bg-primary rounded-lg flex items-center justify-center shadow-md shadow-primary/20">
+              <Brain className="text-primary-foreground w-5 h-5" />
+            </div>
+            <span className="font-bold text-base tracking-tight truncate">MindVault</span>
+          </div>
+
+          <Sheet open={isMobileNavOpen} onOpenChange={setIsMobileNavOpen}>
+            <SheetTrigger asChild>
+              <Button variant="ghost" size="icon" className="shrink-0">
+                <Menu className="w-5 h-5" />
+              </Button>
+            </SheetTrigger>
+            <SheetContent side="left" className="w-[min(20rem,88vw)] p-0 bg-sidebar text-sidebar-foreground">
+              <div className="h-full flex flex-col">
+                <div className="h-16 px-5 flex items-center gap-3 border-b border-sidebar-border">
+                  <div className="w-8 h-8 bg-primary rounded-lg flex items-center justify-center shadow-md shadow-primary/20">
+                    <Brain className="text-primary-foreground w-5 h-5" />
+                  </div>
+                  <span className="font-bold text-lg tracking-tight">MindVault</span>
+                </div>
+
+                <ScrollArea className="flex-1 px-4 py-4">
+                  <div className="space-y-1 mb-6">
+                    {navItems.map((item) => {
+                      const isActive =
+                        item.href === "/"
+                          ? location === "/"
+                          : location === item.href || location.startsWith(`${item.href}/`);
+                      const badge =
+                        item.href === "/reminders" && upcomingReminders.length > 0
+                          ? upcomingReminders.length
+                          : undefined;
+
+                      return (
+                        <Link
+                          key={item.href}
+                          href={item.href}
+                          className="block"
+                          onClick={() => setIsMobileNavOpen(false)}
+                        >
+                          <div
+                            className={cn(
+                              "flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm font-medium transition-all duration-200",
+                              isActive
+                                ? "bg-primary text-primary-foreground shadow-sm shadow-primary/20"
+                                : "text-sidebar-foreground/70 hover:bg-sidebar-accent hover:text-sidebar-accent-foreground",
+                            )}
+                          >
+                            <item.icon className="w-4 h-4 shrink-0" />
+                            <span className="truncate">{item.label}</span>
+                            {badge && (
+                              <span className="ml-auto bg-destructive text-destructive-foreground text-[10px] font-bold px-2 py-0.5 rounded-full">
+                                {badge}
+                              </span>
+                            )}
+                          </div>
+                        </Link>
+                      );
+                    })}
+                  </div>
+
+                  <div className="mb-3 px-2 flex items-center justify-between">
+                    <h3 className="text-xs font-semibold text-sidebar-foreground/50 uppercase tracking-wider">
+                      Ваши папки
+                    </h3>
+                    <Button variant="ghost" size="icon" className="h-7 w-7" onClick={() => setIsCreateFolderOpen(true)}>
+                      <Plus className="h-4 w-4" />
+                    </Button>
+                  </div>
+
+                  <div className="space-y-1">
+                    {userFolders.map((folder) => {
+                      const isFolderActive = activeFolderId === folder.id;
+                      return (
+                        <Link
+                          key={folder.id}
+                          href={`/folders/${folder.id}`}
+                          className="block"
+                          onClick={() => setIsMobileNavOpen(false)}
+                        >
+                          <div
+                            className={cn(
+                              "flex items-center gap-3 px-3 py-2 rounded-lg text-sm",
+                              isFolderActive
+                                ? "bg-sidebar-accent text-sidebar-accent-foreground font-medium"
+                                : "text-sidebar-foreground/70 hover:bg-sidebar-accent hover:text-sidebar-accent-foreground",
+                            )}
+                          >
+                            <FolderIcon className="w-4 h-4 text-sidebar-foreground/40 shrink-0" />
+                            <span className="truncate">{folder.name}</span>
+                            <span className="ml-auto text-xs text-sidebar-foreground/40">{folder.itemCount}</span>
+                          </div>
+                        </Link>
+                      );
+                    })}
+                  </div>
+                </ScrollArea>
+
+                <div className="p-4 border-t border-sidebar-border space-y-2">
+                  <Link href="/settings" className="block" onClick={() => setIsMobileNavOpen(false)}>
+                    <div
+                      className={cn(
+                        "flex items-center gap-3 px-3 py-2 rounded-lg text-sm transition-colors",
+                        location === "/settings"
+                          ? "bg-sidebar-accent text-sidebar-accent-foreground font-medium"
+                          : "text-sidebar-foreground/70 hover:bg-sidebar-accent hover:text-sidebar-accent-foreground",
+                      )}
+                    >
+                      <Settings className="w-4 h-4" />
+                      <span>Настройки</span>
+                    </div>
+                  </Link>
+
+                  <button
+                    type="button"
+                    className="w-full flex items-center gap-3 px-3 py-2 rounded-lg text-sm transition-colors text-sidebar-foreground/70 hover:bg-destructive/10 hover:text-destructive"
+                    onClick={handleLogout}
+                  >
+                    <LogOut className="w-4 h-4" />
+                    <span>Выйти</span>
+                  </button>
+                </div>
+              </div>
+            </SheetContent>
+          </Sheet>
+        </header>
+
+        <div className="flex-1 min-h-0 overflow-hidden">{children}</div>
+      </main>
     </div>
   );
 }

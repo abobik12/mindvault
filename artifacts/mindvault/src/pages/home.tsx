@@ -35,6 +35,7 @@ import {
   Pencil,
   Trash2,
   FolderOpen,
+  ArrowDown,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { toast } from "sonner";
@@ -212,6 +213,7 @@ export default function Home() {
   const [isConvertingType, setIsConvertingType] = useState(false);
   const [isSavingSuggested, setIsSavingSuggested] = useState(false);
   const [isNearBottom, setIsNearBottom] = useState(true);
+  const [hasNewMessagesBelow, setHasNewMessagesBelow] = useState(false);
 
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const messagesContainerRef = useRef<HTMLDivElement>(null);
@@ -221,7 +223,10 @@ export default function Home() {
   const { data: folders = [] } = useListFolders();
 
   const { data: activeConversation } = useGetGeminiConversation(activeConversationId as number, {
-    query: { enabled: activeConversationId !== null },
+    query: {
+      queryKey: getGetGeminiConversationQueryKey(activeConversationId as number),
+      enabled: activeConversationId !== null,
+    },
   });
 
   const conversationMessages = useMemo(
@@ -272,55 +277,48 @@ export default function Home() {
     }
   }, [conversations, activeConversationId]);
 
-  // Smart autoscroll: detect if near bottom and scroll accordingly
-  const scrollToBottom = (smooth = false) => {
-    const end = messagesEndRef.current;
-    if (!end) return;
-    end.scrollIntoView({ block: "end", behavior: smooth ? "smooth" : "auto" });
+  const getIsNearBottom = () => {
+    const container = messagesContainerRef.current;
+    if (!container) return true;
+    const distanceFromBottom = container.scrollHeight - container.scrollTop - container.clientHeight;
+    return distanceFromBottom < 96;
   };
 
-  // Track scroll position to detect if user is near bottom
-  useEffect(() => {
+  const scrollToBottom = (smooth = false) => {
     const container = messagesContainerRef.current;
     if (!container) return;
+    container.scrollTo({
+      top: container.scrollHeight,
+      behavior: smooth ? "smooth" : "auto",
+    });
+    setIsNearBottom(true);
+    setHasNewMessagesBelow(false);
+  };
 
-    // Get the scrollable parent element (ScrollArea's viewport)
-    let scrollParent = container.parentElement;
-    while (scrollParent && scrollParent.scrollHeight === scrollParent.parentElement?.scrollHeight) {
-      scrollParent = scrollParent.parentElement;
+  const handleMessagesScroll = () => {
+    const nearBottom = getIsNearBottom();
+    setIsNearBottom(nearBottom);
+    if (nearBottom) {
+      setHasNewMessagesBelow(false);
     }
+  };
 
-    if (!scrollParent) scrollParent = container.parentElement;
-
-    const handleScroll = () => {
-      if (!scrollParent) return;
-      const scrollPercentage = (scrollParent.scrollTop + scrollParent.clientHeight) / scrollParent.scrollHeight;
-      setIsNearBottom(scrollPercentage > 0.85);
-    };
-
-    if (scrollParent) {
-      scrollParent.addEventListener("scroll", handleScroll, { passive: true });
-      return () => scrollParent.removeEventListener("scroll", handleScroll);
-    }
-  }, []);
-
-  // Auto-scroll on new messages or streaming (only if near bottom or streaming)
   useEffect(() => {
-    if (isNearBottom || isStreaming) {
-      const animationFrame = window.requestAnimationFrame(() => {
+    const frame = window.requestAnimationFrame(() => scrollToBottom(false));
+    return () => window.cancelAnimationFrame(frame);
+  }, [activeConversationId, activeConversation?.id]);
+
+  useEffect(() => {
+    const shouldFollow = isNearBottom;
+    const frame = window.requestAnimationFrame(() => {
+      if (shouldFollow) {
         scrollToBottom(false);
-      });
-      return () => window.cancelAnimationFrame(animationFrame);
-    }
-  }, [conversationMessages, streamingMessage, isStreaming, isNearBottom]);
-
-  // Force scroll to bottom when sending a new message
-  useEffect(() => {
-    if (conversationMessages.length > 0 && !isStreaming) {
-      scrollToBottom(false);
-      setIsNearBottom(true);
-    }
-  }, [activeConversationId]);
+      } else if (conversationMessages.length > 0 || streamingMessage) {
+        setHasNewMessagesBelow(true);
+      }
+    });
+    return () => window.cancelAnimationFrame(frame);
+  }, [conversationMessages.length, streamingMessage, isNearBottom]);
 
   const patchMessageContext = (
     messageId: number,
@@ -616,6 +614,8 @@ export default function Home() {
 
     const messageContent = input.trim();
     setInput("");
+    setIsNearBottom(true);
+    setHasNewMessagesBelow(false);
 
     queryClient.setQueryData(getGetGeminiConversationQueryKey(activeConversationId), (old: any) => {
       if (!old) return old;
@@ -633,6 +633,7 @@ export default function Home() {
         ],
       };
     });
+    window.requestAnimationFrame(() => scrollToBottom(false));
 
     let assistantContextForMessage: AssistantMessageContext | null = null;
 
@@ -926,8 +927,8 @@ export default function Home() {
 
   return (
     <>
-      <div className="flex h-full w-full">
-      <div className="w-64 border-r border-border bg-card/30 flex flex-col">
+      <div className="flex h-full min-h-0 w-full">
+      <div className="hidden lg:flex w-64 border-r border-border bg-card/30 flex-col">
         <div className="p-4 border-b border-border/50">
           <Button onClick={handleNewChat} className="w-full gap-2 shadow-sm" variant="default">
             <Plus className="w-4 h-4" />
@@ -962,17 +963,21 @@ export default function Home() {
         </ScrollArea>
       </div>
 
-      <div className="flex-1 flex flex-col relative bg-card/10">
+      <div className="flex-1 min-w-0 flex flex-col relative bg-card/10">
         {!activeConversationId ? (
           <div className="flex-1 flex items-center justify-center text-muted-foreground">
             Выберите диалог или создайте новый
           </div>
         ) : (
           <>
-            <ScrollArea className="flex-1 p-4">
-              <div ref={messagesContainerRef} className="max-w-3xl mx-auto space-y-6 pb-32">
+            <div
+              ref={messagesContainerRef}
+              onScroll={handleMessagesScroll}
+              className="flex-1 min-h-0 overflow-y-auto px-3 py-4 sm:px-4"
+            >
+              <div className="max-w-3xl mx-auto space-y-5 sm:space-y-6 pb-40 sm:pb-36">
                 {conversationMessages.map((msg, i) => (
-                  <div key={msg.id || i} className={cn("flex gap-4", msg.role === "user" ? "flex-row-reverse" : "")}> 
+                  <div key={msg.id || i} className={cn("flex gap-3 sm:gap-4", msg.role === "user" ? "flex-row-reverse" : "")}> 
                     <div
                       className={cn(
                         "w-8 h-8 rounded-full flex items-center justify-center shrink-0 mt-1 shadow-sm",
@@ -983,10 +988,10 @@ export default function Home() {
                     >
                       {msg.role === "user" ? <User className="w-4 h-4" /> : <Bot className="w-4 h-4" />}
                     </div>
-                    <div className={cn("flex flex-col max-w-[80%]", msg.role === "user" ? "items-end" : "items-start")}>
+                    <div className={cn("flex flex-col max-w-[85%] sm:max-w-[80%] min-w-0", msg.role === "user" ? "items-end" : "items-start")}>
                       <div
                         className={cn(
-                          "px-4 py-3 rounded-2xl shadow-sm text-sm leading-relaxed",
+                          "px-4 py-3 rounded-2xl shadow-sm text-sm leading-relaxed break-words",
                           msg.role === "user"
                             ? "bg-primary text-primary-foreground rounded-tr-sm whitespace-pre-wrap"
                             : "bg-card border border-border/50 text-card-foreground rounded-tl-sm",
@@ -1007,8 +1012,8 @@ export default function Home() {
                     <div className="w-8 h-8 rounded-full bg-secondary text-secondary-foreground flex items-center justify-center shrink-0 mt-1 shadow-sm">
                       <Bot className="w-4 h-4" />
                     </div>
-                    <div className="flex flex-col max-w-[80%] items-start">
-                      <div className="px-4 py-3 rounded-2xl shadow-sm text-sm leading-relaxed bg-card border border-border/50 text-card-foreground rounded-tl-sm">
+                    <div className="flex flex-col max-w-[85%] sm:max-w-[80%] min-w-0 items-start">
+                      <div className="px-4 py-3 rounded-2xl shadow-sm text-sm leading-relaxed break-words bg-card border border-border/50 text-card-foreground rounded-tl-sm">
                         <MarkdownMessage content={streamingMessage} />
                         <span className="inline-block w-1 h-4 ml-1 bg-primary animate-pulse" />
                       </div>
@@ -1020,7 +1025,7 @@ export default function Home() {
                     <div className="w-8 h-8 rounded-full bg-secondary text-secondary-foreground flex items-center justify-center shrink-0 mt-1 shadow-sm">
                       <Bot className="w-4 h-4 animate-pulse" />
                     </div>
-                    <div className="flex flex-col max-w-[80%] items-start">
+                    <div className="flex flex-col max-w-[85%] sm:max-w-[80%] min-w-0 items-start">
                       <div className="px-4 py-3 rounded-2xl shadow-sm text-sm leading-relaxed bg-card border border-border/50 text-card-foreground rounded-tl-sm">
                         ИИ печатает...
                       </div>
@@ -1029,10 +1034,23 @@ export default function Home() {
                 )}
                 <div ref={messagesEndRef} />
               </div>
-            </ScrollArea>
+            </div>
 
-            <div className="absolute bottom-0 left-0 right-0 p-4 bg-gradient-to-t from-background via-background to-transparent pt-10 pointer-events-none">
-              <div className="max-w-3xl mx-auto relative flex items-end gap-2 bg-card rounded-2xl border border-border/50 shadow-lg p-2 focus-within:ring-1 focus-within:ring-primary/50 transition-all pointer-events-auto">
+            {hasNewMessagesBelow && !isNearBottom ? (
+              <Button
+                type="button"
+                size="sm"
+                variant="secondary"
+                className="absolute bottom-28 left-1/2 z-10 -translate-x-1/2 rounded-full shadow-md gap-1.5"
+                onClick={() => scrollToBottom(true)}
+              >
+                <ArrowDown className="w-4 h-4" />
+                Вниз
+              </Button>
+            ) : null}
+
+            <div className="absolute bottom-0 left-0 right-0 p-3 sm:p-4 bg-gradient-to-t from-background via-background to-transparent pt-10 pointer-events-none">
+              <div className="max-w-3xl mx-auto relative flex flex-wrap sm:flex-nowrap items-end gap-2 bg-card rounded-2xl border border-border/50 shadow-lg p-2 focus-within:ring-1 focus-within:ring-primary/50 transition-all pointer-events-auto">
                 <input type="file" className="hidden" ref={fileInputRef} onChange={handleFileUpload} />
                 <Button
                   variant="ghost"
@@ -1045,7 +1063,7 @@ export default function Home() {
                 </Button>
 
                 <Select value={saveFolderContext} onValueChange={setSaveFolderContext}>
-                  <SelectTrigger className="w-[210px] h-10 border-border/40 bg-background/60 text-xs shrink-0">
+                  <SelectTrigger className="w-[calc(100vw-7.5rem)] sm:w-[210px] h-10 border-border/40 bg-background/60 text-xs shrink-0">
                     <SelectValue placeholder="Папка для авто-сохранения" />
                   </SelectTrigger>
                   <SelectContent>
@@ -1064,7 +1082,7 @@ export default function Home() {
                   onChange={(e) => setInput(e.target.value)}
                   onKeyDown={handleKeyDown}
                   placeholder="Напишите сообщение или команду для сохранения..."
-                  className="min-h-[44px] max-h-[200px] resize-none border-0 focus-visible:ring-0 shadow-none bg-transparent p-3 text-sm"
+                  className="min-h-[44px] max-h-[32dvh] min-w-0 flex-1 resize-none border-0 focus-visible:ring-0 shadow-none bg-transparent p-3 text-sm"
                   rows={1}
                   disabled={isStreaming}
                 />

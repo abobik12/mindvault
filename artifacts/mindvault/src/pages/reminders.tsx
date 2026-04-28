@@ -133,16 +133,16 @@ export default function RemindersPage() {
   };
 
   return (
-    <div className="h-full flex flex-col p-6 bg-slate-50/50 dark:bg-transparent overflow-y-auto">
-      <div className="flex items-center justify-between mb-8 shrink-0">
+    <div className="h-full min-h-0 flex flex-col p-4 sm:p-6 bg-slate-50/50 dark:bg-transparent overflow-y-auto">
+      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 mb-6 sm:mb-8 shrink-0">
         <div>
-          <h1 className="text-3xl font-serif font-bold tracking-tight text-foreground">Напоминания</h1>
+          <h1 className="text-2xl sm:text-3xl font-serif font-bold tracking-tight text-foreground">Напоминания</h1>
           <p className="text-muted-foreground text-sm mt-1">Все даты и время отображаются по Москве (UTC+3).</p>
         </div>
 
         <Dialog open={isCreateOpen} onOpenChange={setIsCreateOpen}>
           <DialogTrigger asChild>
-            <Button className="shadow-md shadow-primary/20 gap-2">
+            <Button className="w-full sm:w-auto shadow-md shadow-primary/20 gap-2">
               <Plus className="w-4 h-4" />
               Новое напоминание
             </Button>
@@ -191,7 +191,7 @@ export default function RemindersPage() {
         </Dialog>
       </div>
 
-      <div className="flex-1 max-w-4xl mx-auto w-full space-y-8">
+      <div className="flex-1 max-w-4xl mx-auto w-full space-y-8 min-w-0">
         {upcomingReminders.length > 0 && (
           <div className="space-y-4">
             <h2 className="text-sm font-semibold text-primary uppercase tracking-wider flex items-center gap-2">
@@ -258,7 +258,7 @@ export default function RemindersPage() {
                   <div
                     key={reminder.id}
                     className={cn(
-                      "group flex items-center gap-4 p-4 bg-card rounded-xl border transition-all",
+                      "group flex flex-col sm:flex-row sm:items-center gap-4 p-4 bg-card rounded-xl border transition-all",
                       reminder.status === "completed"
                         ? "border-border/40 opacity-60"
                         : overdue
@@ -282,7 +282,7 @@ export default function RemindersPage() {
                       )}
                     </button>
 
-                    <div className="flex-1 min-w-0">
+                    <div className="flex-1 min-w-0 w-full">
                       <p
                         className={cn(
                           "text-sm font-medium truncate",
@@ -310,12 +310,12 @@ export default function RemindersPage() {
                       </div>
                     </div>
 
-                    <div className="flex items-center gap-2 shrink-0">
+                    <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-2 shrink-0 w-full sm:w-auto">
                       <Select
                         value={reminder.folderId ? String(reminder.folderId) : "none"}
                         onValueChange={(value) => moveReminder(reminder, value)}
                       >
-                        <SelectTrigger className="w-[180px] h-8 text-xs">
+                        <SelectTrigger className="w-full sm:w-[180px] h-8 text-xs">
                           <SelectValue placeholder="Переместить" />
                         </SelectTrigger>
                         <SelectContent>
