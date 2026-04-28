@@ -18,7 +18,7 @@ services:
   api:
     build:
       context: .
-      dockerfile: Dockerfile.local
+      dockerfile: dockerfile
     depends_on:
       db:
         condition: service_healthy
@@ -46,7 +46,7 @@ services:
   web:
     build:
       context: .
-      dockerfile: Dockerfile.local
+      dockerfile: dockerfile
     depends_on:
       api:
         condition: service_started
