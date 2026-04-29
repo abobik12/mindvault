@@ -72,10 +72,10 @@ const folderSchema = z.object({
 });
 
 const navItems = [
-  { icon: MessageSquare, label: "Главная", href: "/" },
-  { icon: FileText, label: "Все заметки", href: "/notes" },
-  { icon: HardDrive, label: "Все файлы", href: "/files" },
-  { icon: Clock, label: "Все напоминания", href: "/reminders" },
+  { icon: MessageSquare, label: "Чат", href: "/" },
+  { icon: FileText, label: "Заметки", href: "/notes" },
+  { icon: HardDrive, label: "Файлы", href: "/files" },
+  { icon: Clock, label: "Напоминания", href: "/reminders" },
 ] as const;
 
 function getFolderIdFromLocation(location: string): number | null {
@@ -234,12 +234,12 @@ export default function Layout({ children }: { children: React.ReactNode }) {
   return (
     <div className="flex h-dvh bg-background overflow-hidden text-foreground">
       <aside className="w-64 border-r border-border bg-sidebar/50 backdrop-blur-xl flex-col hidden lg:flex">
-        <div className="h-16 px-6 flex items-center gap-3 border-b border-border/50">
+        <Link href="/" className="h-16 px-6 flex items-center gap-3 border-b border-border/50 transition-colors hover:bg-sidebar-accent/50">
           <div className="w-8 h-8 bg-primary rounded-lg flex items-center justify-center shadow-md shadow-primary/20">
             <Brain className="text-primary-foreground w-5 h-5" />
           </div>
           <span className="font-bold text-lg tracking-tight">MindVault</span>
-        </div>
+        </Link>
 
         <ScrollArea className="flex-1 px-4 py-4">
           <div className="space-y-1 mb-8">
@@ -258,7 +258,7 @@ export default function Layout({ children }: { children: React.ReactNode }) {
                 <Link key={item.href} href={item.href} className="block">
                   <div
                     className={cn(
-                      "flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm font-medium transition-all duration-200",
+                      "flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm font-medium leading-5 tracking-normal transition-all duration-200",
                       isActive
                         ? "bg-primary text-primary-foreground shadow-sm shadow-primary/20"
                         : "text-sidebar-foreground/70 hover:bg-sidebar-accent hover:text-sidebar-accent-foreground",
@@ -347,7 +347,7 @@ export default function Layout({ children }: { children: React.ReactNode }) {
                   )}
                 >
                   <Link href={`/folders/${folder.id}`} className="block flex-1 min-w-0">
-                    <div className="flex items-center gap-3 px-3 py-2 text-sm">
+                    <div className="flex items-center gap-3 px-3 py-2 text-sm font-medium leading-5 tracking-normal">
                       <FolderIcon className="w-4 h-4 text-sidebar-foreground/40" />
                       <span className={cn("truncate", isFolderActive && "font-medium")}>{folder.name}</span>
                       <span className="ml-auto text-xs text-sidebar-foreground/40">{folder.itemCount}</span>
@@ -406,7 +406,7 @@ export default function Layout({ children }: { children: React.ReactNode }) {
           <Link href="/settings" className="block">
             <div
               className={cn(
-                "flex items-center gap-3 px-3 py-2 rounded-lg text-sm transition-colors mb-2",
+                "flex items-center gap-3 px-3 py-2 rounded-lg text-sm font-medium leading-5 tracking-normal transition-colors mb-2",
                 location === "/settings"
                   ? "bg-sidebar-accent text-sidebar-accent-foreground font-medium"
                   : "text-sidebar-foreground/70 hover:bg-sidebar-accent hover:text-sidebar-accent-foreground",
@@ -512,14 +512,7 @@ export default function Layout({ children }: { children: React.ReactNode }) {
       </AlertDialog>
 
       <main className="flex-1 min-w-0 flex flex-col overflow-hidden relative">
-        <header className="lg:hidden h-14 shrink-0 border-b border-border/50 bg-sidebar/80 backdrop-blur-xl px-4 flex items-center justify-between">
-          <div className="flex items-center gap-3 min-w-0">
-            <div className="w-8 h-8 bg-primary rounded-lg flex items-center justify-center shadow-md shadow-primary/20">
-              <Brain className="text-primary-foreground w-5 h-5" />
-            </div>
-            <span className="font-bold text-base tracking-tight truncate">MindVault</span>
-          </div>
-
+        <header className="lg:hidden h-14 shrink-0 border-b border-border/50 bg-sidebar/80 backdrop-blur-xl px-3 flex items-center gap-2">
           <Sheet open={isMobileNavOpen} onOpenChange={setIsMobileNavOpen}>
             <SheetTrigger asChild>
               <Button variant="ghost" size="icon" className="shrink-0">
@@ -528,12 +521,16 @@ export default function Layout({ children }: { children: React.ReactNode }) {
             </SheetTrigger>
             <SheetContent side="left" className="w-[min(20rem,88vw)] p-0 bg-sidebar text-sidebar-foreground">
               <div className="h-full flex flex-col">
-                <div className="h-16 px-5 flex items-center gap-3 border-b border-sidebar-border">
+                <Link
+                  href="/"
+                  className="h-16 px-5 flex items-center gap-3 border-b border-sidebar-border transition-colors hover:bg-sidebar-accent/50"
+                  onClick={() => setIsMobileNavOpen(false)}
+                >
                   <div className="w-8 h-8 bg-primary rounded-lg flex items-center justify-center shadow-md shadow-primary/20">
                     <Brain className="text-primary-foreground w-5 h-5" />
                   </div>
                   <span className="font-bold text-lg tracking-tight">MindVault</span>
-                </div>
+                </Link>
 
                 <ScrollArea className="flex-1 px-4 py-4">
                   <div className="space-y-1 mb-6">
@@ -556,7 +553,7 @@ export default function Layout({ children }: { children: React.ReactNode }) {
                         >
                           <div
                             className={cn(
-                              "flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm font-medium transition-all duration-200",
+                              "flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm font-medium leading-5 tracking-normal transition-all duration-200",
                               isActive
                                 ? "bg-primary text-primary-foreground shadow-sm shadow-primary/20"
                                 : "text-sidebar-foreground/70 hover:bg-sidebar-accent hover:text-sidebar-accent-foreground",
@@ -596,7 +593,7 @@ export default function Layout({ children }: { children: React.ReactNode }) {
                         >
                           <div
                             className={cn(
-                              "flex items-center gap-3 px-3 py-2 rounded-lg text-sm",
+                              "flex items-center gap-3 px-3 py-2 rounded-lg text-sm font-medium leading-5 tracking-normal",
                               isFolderActive
                                 ? "bg-sidebar-accent text-sidebar-accent-foreground font-medium"
                                 : "text-sidebar-foreground/70 hover:bg-sidebar-accent hover:text-sidebar-accent-foreground",
@@ -616,7 +613,7 @@ export default function Layout({ children }: { children: React.ReactNode }) {
                   <Link href="/settings" className="block" onClick={() => setIsMobileNavOpen(false)}>
                     <div
                       className={cn(
-                        "flex items-center gap-3 px-3 py-2 rounded-lg text-sm transition-colors",
+                        "flex items-center gap-3 px-3 py-2 rounded-lg text-sm font-medium leading-5 tracking-normal transition-colors",
                         location === "/settings"
                           ? "bg-sidebar-accent text-sidebar-accent-foreground font-medium"
                           : "text-sidebar-foreground/70 hover:bg-sidebar-accent hover:text-sidebar-accent-foreground",
@@ -639,6 +636,15 @@ export default function Layout({ children }: { children: React.ReactNode }) {
               </div>
             </SheetContent>
           </Sheet>
+          <Link
+            href="/"
+            className="flex min-w-0 items-center gap-3 rounded-lg px-1 py-1 transition-colors hover:bg-sidebar-accent/50"
+          >
+            <div className="w-8 h-8 bg-primary rounded-lg flex items-center justify-center shadow-md shadow-primary/20">
+              <Brain className="text-primary-foreground w-5 h-5" />
+            </div>
+            <span className="font-bold text-base tracking-tight truncate">MindVault</span>
+          </Link>
         </header>
 
         <div className="flex-1 min-h-0 overflow-hidden">{children}</div>

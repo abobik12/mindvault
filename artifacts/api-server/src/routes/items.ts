@@ -15,42 +15,9 @@ import {
   GetRecentItemsQueryParams,
   GetUpcomingRemindersQueryParams,
 } from "@workspace/api-zod";
+import { extractTextFromUpload } from "../lib/file-extraction";
 
 const router: IRouter = Router();
-
-const TEXT_FILE_EXTENSIONS = new Set(["txt", "md", "csv", "json", "xml", "yml", "yaml", "log", "html", "css", "js", "ts"]);
-const TEXT_MIME_TYPES = new Set([
-  "application/json",
-  "application/xml",
-  "application/yaml",
-  "application/x-yaml",
-  "text/csv",
-]);
-
-function isPlainTextUpload(filename: string, mimeType: string): boolean {
-  const normalizedMime = mimeType.toLowerCase();
-  const extension = filename.split(".").pop()?.toLowerCase() ?? "";
-  return normalizedMime.startsWith("text/") || TEXT_MIME_TYPES.has(normalizedMime) || TEXT_FILE_EXTENSIONS.has(extension);
-}
-
-function extractPlainTextFromUpload(filename: string, mimeType: string, fileData: string): string | null {
-  if (!isPlainTextUpload(filename, mimeType)) return null;
-
-  try {
-    const decoded = Buffer.from(fileData, "base64").toString("utf8").replace(/\u0000/g, "").trim();
-    if (!decoded) return null;
-
-    const controlChars = decoded.match(/[\u0001-\u0008\u000B\u000C\u000E-\u001F\u007F-\u009F]/g)?.length ?? 0;
-    const replacementChars = decoded.match(/\uFFFD/g)?.length ?? 0;
-    if (controlChars / decoded.length > 0.02 || replacementChars / decoded.length > 0.01) {
-      return null;
-    }
-
-    return decoded.slice(0, 120_000);
-  } catch {
-    return null;
-  }
-}
 
 async function folderBelongsToUser(userId: number, folderId: number): Promise<boolean> {
   const [folder] = await db
@@ -187,11 +154,14 @@ router.post("/items/upload", requireAuth, async (req, res): Promise<void> => {
     }
   }
 
+  const extraction = await extractTextFromUpload(filename, mimeType, fileData);
+
   const [item] = await db.insert(itemsTable).values({
     userId: req.auth!.userId,
     type: "file" as const,
     title: filename,
-    content: extractPlainTextFromUpload(filename, mimeType, fileData),
+    content: extraction.text,
+    summary: extraction.summary,
     originalFilename: filename,
     mimeType,
     fileData,

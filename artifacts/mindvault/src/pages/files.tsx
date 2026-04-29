@@ -1,4 +1,5 @@
 ﻿import { useMemo, useRef, useState } from "react";
+import { useLocation } from "wouter";
 import {
   useListItems,
   useUploadFile,
@@ -13,6 +14,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Card, CardContent, CardHeader, CardTitle, CardFooter } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
+import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import {
   Search,
@@ -26,6 +28,11 @@ import {
   FileText,
   FileArchive,
   UploadCloud,
+  Eye,
+  Sparkles,
+  Copy,
+  FileCode,
+  FileSpreadsheet,
 } from "lucide-react";
 import { toast } from "sonner";
 import { formatMoscowDateShort } from "@/lib/time";
@@ -81,6 +88,7 @@ const TEXT_MIME_EXACT = new Set([
   "application/sql",
   "text/csv",
 ]);
+const CODE_EXTENSIONS = new Set(["js", "jsx", "ts", "tsx", "css", "html", "xml", "yaml", "yml", "sql"]);
 const EXPLICIT_BINARY_MIME_PREFIXES = [
   "application/vnd.openxmlformats-officedocument",
   "application/vnd.ms-",
@@ -99,9 +107,26 @@ type FileLike = {
   originalFilename: string | null;
   mimeType: string | null;
   fileData: string | null;
+  fileSize?: number | null;
+  folderId?: number | null;
+  folderName?: string | null;
+  createdAt?: string;
+  updatedAt?: string;
   content?: string | null;
   summary?: string | null;
 };
+
+type FileKind =
+  | "pdf"
+  | "image"
+  | "docx"
+  | "spreadsheet"
+  | "csv"
+  | "json"
+  | "code"
+  | "text"
+  | "archive"
+  | "unknown";
 
 type FilePreview =
   | { kind: "image"; src: string }
@@ -133,6 +158,29 @@ function isCsvFile(file: FileLike): boolean {
   const mime = normalizeMime(file.mimeType);
   const extension = getFileExtension(file.originalFilename || file.title);
   return mime.includes("csv") || extension === "csv";
+}
+
+function getFileKind(file: FileLike): FileKind {
+  const mime = normalizeMime(file.mimeType);
+  const extension = getFileExtension(file.originalFilename || file.title);
+
+  if (mime.startsWith("image/")) return "image";
+  if (mime.includes("pdf") || extension === "pdf") return "pdf";
+  if (extension === "docx" || mime.includes("wordprocessingml") || mime.includes("msword")) return "docx";
+  if (["xls", "xlsx"].includes(extension) || mime.includes("spreadsheet") || mime.includes("excel")) return "spreadsheet";
+  if (mime.includes("csv") || extension === "csv") return "csv";
+  if (mime.includes("json") || extension === "json") return "json";
+  if (CODE_EXTENSIONS.has(extension)) return "code";
+  if (TEXT_EXTENSIONS.has(extension) || mime.startsWith("text/")) return "text";
+  if (mime.includes("zip") || mime.includes("rar") || mime.includes("tar") || ["zip", "rar", "7z", "gz"].includes(extension)) return "archive";
+  return "unknown";
+}
+
+function getFileTypeLabel(file: FileLike): string {
+  const extension = getFileExtension(file.originalFilename || file.title);
+  if (extension) return extension.toUpperCase();
+  const mime = normalizeMime(file.mimeType);
+  return (mime.split("/")[1] || "FILE").toUpperCase();
 }
 
 function isOfficeLikeFile(file: FileLike): boolean {
@@ -350,18 +398,96 @@ function buildFilePreview(file: FileLike): FilePreview {
   return { kind: "none", message: "Предпросмотр недоступен для этого формата" };
 }
 
+function getFilePreviewText(file: FileLike, maxChars = TEXT_PREVIEW_MAX_CHARS): string {
+  const fromContent = file.content?.trim();
+  if (fromContent) {
+    if (getFileKind(file) === "json") {
+      try {
+        const pretty = JSON.stringify(JSON.parse(fromContent), null, 2);
+        return pretty.length > maxChars ? `${pretty.slice(0, maxChars)}…` : pretty;
+      } catch {
+        return fromContent.length > maxChars ? `${fromContent.slice(0, maxChars)}…` : fromContent;
+      }
+    }
+    return fromContent.length > maxChars ? `${fromContent.slice(0, maxChars)}…` : fromContent;
+  }
+
+  if (!file.fileData || !isTextLikeFile(file)) return "";
+  const decoded = decodeBase64TextChunk(file.fileData, TEXT_PREVIEW_MAX_BYTES);
+  if (!decoded) return "";
+  return decoded.length > maxChars ? `${decoded.slice(0, maxChars)}…` : decoded;
+}
+
+function buildDataUrl(file: FileLike): string | null {
+  if (!file.fileData) return null;
+  return `data:${normalizeMime(file.mimeType)};base64,${file.fileData}`;
+}
+
+function canPreviewInline(file: FileLike): boolean {
+  const kind = getFileKind(file);
+  if ((kind === "pdf" || kind === "image") && file.fileData) return true;
+  return Boolean(getFilePreviewText(file, 20));
+}
+
 function getFileSearchText(file: FileLike): string {
+  const content = file.content?.trim();
+  if (content) return content;
   if (!file.fileData || !isTextLikeFile(file)) return "";
   return decodeBase64TextChunk(file.fileData, 100 * 1024) || "";
 }
 
-function getFileIcon(mimeType: string | null) {
-  if (!mimeType) return File;
-  if (mimeType.startsWith("image/")) return ImageIcon;
-  if (mimeType.includes("pdf")) return FileText;
-  if (mimeType.includes("zip") || mimeType.includes("tar") || mimeType.includes("rar")) return FileArchive;
-  if (mimeType.includes("word") || mimeType.includes("document")) return FileText;
+function getFileIcon(file: FileLike) {
+  const kind = getFileKind(file);
+  if (kind === "image") return ImageIcon;
+  if (kind === "spreadsheet" || kind === "csv") return FileSpreadsheet;
+  if (kind === "code" || kind === "json") return FileCode;
+  if (kind === "archive") return FileArchive;
+  if (kind === "pdf" || kind === "docx" || kind === "text") return FileText;
   return File;
+}
+
+function getFileKindLabel(file: FileLike): string {
+  const kind = getFileKind(file);
+  if (kind === "pdf") return "PDF";
+  if (kind === "image") return "Изображение";
+  if (kind === "docx") return "DOCX";
+  if (kind === "spreadsheet") return "Таблица";
+  if (kind === "csv") return "CSV";
+  if (kind === "json") return "JSON";
+  if (kind === "code") return "Код";
+  if (kind === "text") return "Текст";
+  if (kind === "archive") return "Архив";
+  return "Файл";
+}
+
+function getExtractionStatus(file: FileLike): { label: string; className: string } {
+  const summary = file.summary ?? "";
+
+  if (file.content?.trim()) {
+    return {
+      label: "Текст извлечен",
+      className: "border-emerald-200 bg-emerald-50 text-emerald-700",
+    };
+  }
+
+  if (summary.includes("extractionStatus:unsupported")) {
+    return {
+      label: "Формат не поддерживается",
+      className: "border-slate-200 bg-slate-50 text-slate-600",
+    };
+  }
+
+  if (summary.includes("extractionStatus:failed")) {
+    return {
+      label: "Ошибка обработки",
+      className: "border-amber-200 bg-amber-50 text-amber-700",
+    };
+  }
+
+  return {
+    label: "Текст пока не извлечен",
+    className: "border-slate-200 bg-slate-50 text-slate-600",
+  };
 }
 
 function formatBytes(bytes: number, decimals = 2) {
@@ -378,7 +504,9 @@ export default function FilesPage() {
   const [uploadFolderId, setUploadFolderId] = useState("none");
   const [isDragging, setIsDragging] = useState(false);
   const [failedImagePreviews, setFailedImagePreviews] = useState<Record<number, true>>({});
+  const [selectedFile, setSelectedFile] = useState<FileLike | null>(null);
   const queryClient = useQueryClient();
+  const [, setLocation] = useLocation();
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   const { data: files = [], isLoading } = useListItems(
@@ -415,11 +543,13 @@ export default function FilesPage() {
     return files.filter((file) => {
       const inTitle = file.title.toLowerCase().includes(query);
       const inFilename = file.originalFilename?.toLowerCase().includes(query) ?? false;
+      const inMime = file.mimeType?.toLowerCase().includes(query) ?? false;
+      const inFolder = file.folderName?.toLowerCase().includes(query) ?? false;
       const inContent = file.content?.toLowerCase().includes(query) ?? false;
       const inSummary = file.summary?.toLowerCase().includes(query) ?? false;
       const inDecodedText = searchableTextMap.get(file.id)?.includes(query) ?? false;
 
-      return inTitle || inFilename || inContent || inSummary || inDecodedText;
+      return inTitle || inFilename || inMime || inFolder || inContent || inSummary || inDecodedText;
     });
   }, [files, search, searchableTextMap]);
 
@@ -549,7 +679,158 @@ export default function FilesPage() {
     }
   };
 
+  const handleCopyExtractedText = async (file: FileLike) => {
+    const text = getFilePreviewText(file, 80_000);
+    if (!text.trim()) {
+      toast.error("В этом файле пока нет извлеченного текста");
+      return;
+    }
+
+    try {
+      await navigator.clipboard.writeText(text);
+      toast.success("Текст файла скопирован");
+    } catch {
+      toast.error("Не удалось скопировать текст");
+    }
+  };
+
+  const handleAskAi = (file: FileLike) => {
+    const name = file.originalFilename || file.title;
+    localStorage.setItem(
+      "mindvault_pending_file_question",
+      JSON.stringify({
+        prompt: `Кратко перескажи файл «${name}»`,
+        attachments: [
+          {
+            id: file.id,
+            name,
+            mimeType: file.mimeType ?? null,
+            fileSize: file.fileSize ?? null,
+            folderId: file.folderId ?? null,
+            folderName: file.folderName ?? null,
+            textPreview: file.content ? file.content.slice(0, 2000) : null,
+            createdAt: file.createdAt ?? new Date().toISOString(),
+          },
+        ],
+      }),
+    );
+    toast.success("Файл добавлен в вопрос ассистенту");
+    setLocation("/");
+  };
+
+  const renderTextPreview = (file: FileLike, className?: string) => {
+    const text = getFilePreviewText(file);
+    if (!text) return null;
+
+    if (isCsvFile(file)) {
+      const rows = getCsvRows(text, 4, 5);
+      if (rows.length > 0) {
+        return (
+          <div className={cn("overflow-hidden rounded-lg border border-border/40 bg-background", className)}>
+            <table className="min-w-full text-[11px] border-collapse">
+              <tbody>
+                {rows.map((row, rowIndex) => (
+                  <tr key={`${file.id}-preview-row-${rowIndex}`} className={rowIndex === 0 ? "bg-muted/60" : ""}>
+                    {row.map((cell, cellIndex) => (
+                      <td key={`${file.id}-preview-cell-${rowIndex}-${cellIndex}`} className="border border-border/30 px-2 py-1 align-top max-w-[120px] truncate">
+                        {cell || "—"}
+                      </td>
+                    ))}
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        );
+      }
+    }
+
+    return (
+      <pre className={cn("line-clamp-4 whitespace-pre-wrap break-words rounded-lg border border-border/40 bg-muted/20 p-2 text-[11px] leading-relaxed text-muted-foreground", getFileKind(file) === "code" || getFileKind(file) === "json" ? "font-mono" : "font-sans", className)}>
+        {text}
+      </pre>
+    );
+  };
+
+  const renderLargePreview = (file: FileLike) => {
+    const kind = getFileKind(file);
+    const dataUrl = buildDataUrl(file);
+    const text = getFilePreviewText(file, 80_000);
+
+    if (kind === "pdf" && dataUrl) {
+      return (
+        <object data={dataUrl} type="application/pdf" className="h-[70dvh] min-h-[420px] w-full rounded-lg border border-border bg-background">
+          <div className="flex h-full min-h-[420px] flex-col items-center justify-center gap-3 px-4 text-center text-sm text-muted-foreground">
+            <FileText className="h-10 w-10" />
+            <p>Встроенный просмотр PDF недоступен в этом браузере.</p>
+            <Button variant="outline" onClick={() => handleDownload(file)}>
+              <Download className="mr-2 h-4 w-4" />
+              Скачать файл
+            </Button>
+          </div>
+        </object>
+      );
+    }
+
+    if (kind === "image" && dataUrl) {
+      return (
+        <div className="flex h-[70dvh] min-h-[360px] items-center justify-center rounded-lg border border-border bg-muted/20 p-3">
+          <img src={dataUrl} alt={file.originalFilename || file.title} className="max-h-full max-w-full object-contain" />
+        </div>
+      );
+    }
+
+    if (isCsvFile(file) && text) {
+      const rows = getCsvRows(text, 40, 10);
+      if (rows.length > 0) {
+        return (
+          <div className="h-[70dvh] min-h-[360px] overflow-auto rounded-lg border border-border bg-background">
+            <table className="min-w-full text-sm border-collapse">
+              <tbody>
+                {rows.map((row, rowIndex) => (
+                  <tr key={`${file.id}-large-row-${rowIndex}`} className={rowIndex === 0 ? "bg-muted/70 font-medium" : ""}>
+                    {row.map((cell, cellIndex) => (
+                      <td key={`${file.id}-large-cell-${rowIndex}-${cellIndex}`} className="border border-border/40 px-3 py-2 align-top">
+                        {cell || "—"}
+                      </td>
+                    ))}
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        );
+      }
+    }
+
+    if (text) {
+      return (
+        <pre className={cn("h-[70dvh] min-h-[360px] overflow-auto whitespace-pre-wrap break-words rounded-lg border border-border bg-background p-4 text-sm leading-relaxed", kind === "code" || kind === "json" ? "font-mono" : "font-sans")}>
+          {text}
+        </pre>
+      );
+    }
+
+    return (
+      <div className="flex h-[70dvh] min-h-[360px] flex-col items-center justify-center gap-3 rounded-lg border border-dashed border-border bg-muted/20 px-4 text-center text-sm text-muted-foreground">
+        <File className="h-10 w-10" />
+        <p>
+          {kind === "docx"
+            ? "Предпросмотр DOCX недоступен: текст еще не извлечен."
+            : kind === "spreadsheet"
+              ? "Предпросмотр таблицы недоступен. Если текст будет извлечен, он появится здесь."
+              : "Предпросмотр для этого формата недоступен."}
+        </p>
+        <Button variant="outline" onClick={() => handleDownload(file)}>
+          <Download className="mr-2 h-4 w-4" />
+          Скачать файл
+        </Button>
+      </div>
+    );
+  };
+
   return (
+    <>
     <div
       className={cn(
         "h-full min-h-0 flex flex-col p-4 sm:p-6 bg-slate-50/50 dark:bg-transparent overflow-y-auto transition-colors",
@@ -573,7 +854,7 @@ export default function FilesPage() {
     >
       <div className="flex flex-col sm:flex-row sm:flex-wrap sm:items-center justify-between gap-4 mb-6 sm:mb-8 shrink-0">
         <div>
-          <h1 className="text-2xl sm:text-3xl font-serif font-bold tracking-tight text-foreground">Файлы</h1>
+          <h1 className="text-2xl sm:text-3xl font-bold tracking-tight text-foreground">Файлы</h1>
           <p className="text-muted-foreground text-sm mt-1">Храните документы и медиа в одном разделе.</p>
         </div>
 
@@ -635,20 +916,46 @@ export default function FilesPage() {
       ) : (
         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 xl:grid-cols-5 gap-4 pb-12">
           {filteredFiles.map((file) => {
-            const Icon = getFileIcon(file.mimeType || "");
+            const fileLike = file as FileLike;
+            const Icon = getFileIcon(fileLike);
             const preview: FilePreview = previewMap.get(file.id) ?? { kind: "none", message: "Предпросмотр недоступен" };
             const imagePreviewFailed = Boolean(failedImagePreviews[file.id]);
+            const previewText = getFilePreviewText(fileLike, 360);
+            const status = getExtractionStatus(fileLike);
 
             return (
-              <Card key={file.id} className="group hover:shadow-md transition-all border-border/50 hover:border-primary/30 flex flex-col">
+              <Card
+                key={file.id}
+                className="group cursor-pointer hover:shadow-md transition-all border-border/50 hover:border-primary/30 flex flex-col"
+                onClick={() => setSelectedFile(fileLike)}
+              >
                 <CardHeader className="pb-3 px-4 pt-4 relative min-w-0">
-                  <div className="w-12 h-12 bg-primary/10 text-primary rounded-xl flex items-center justify-center mb-3">
-                    <Icon className="w-6 h-6" />
+                  <div className="flex items-start gap-3 pr-16">
+                    <div className="w-12 h-12 bg-primary/10 text-primary rounded-xl flex items-center justify-center shrink-0">
+                      <Icon className="w-6 h-6" />
+                    </div>
+                    <div className="min-w-0 flex-1">
+                      <CardTitle className="text-base leading-tight line-clamp-2 min-w-0 break-words" title={file.originalFilename || file.title}>
+                        {file.originalFilename || file.title}
+                      </CardTitle>
+                      <p className="mt-1 text-xs text-muted-foreground">
+                        {formatBytes(file.fileSize || 0)} • {getFileTypeLabel(fileLike)}
+                      </p>
+                    </div>
                   </div>
-                  <CardTitle className="text-base leading-tight line-clamp-1 pr-6 min-w-0 break-all" title={file.originalFilename || file.title}>
-                    {file.originalFilename || file.title}
-                  </CardTitle>
-                  <div className="absolute top-3 right-3 opacity-0 group-hover:opacity-100 transition-opacity flex gap-1">
+                  <div className="absolute top-3 right-3 opacity-100 sm:opacity-0 group-hover:opacity-100 transition-opacity flex gap-1">
+                    <Button
+                      variant="ghost"
+                      size="icon"
+                      className="h-7 w-7 text-muted-foreground hover:text-primary bg-background/50 backdrop-blur-sm"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        setSelectedFile(fileLike);
+                      }}
+                      title="Открыть"
+                    >
+                      <Eye className="w-3.5 h-3.5" />
+                    </Button>
                     <Button
                       variant="ghost"
                       size="icon"
@@ -677,71 +984,47 @@ export default function FilesPage() {
                 </CardHeader>
 
                 <CardContent className="flex-1 px-4 pb-4 space-y-3">
-                  <div
-                    className="mx-auto h-32 w-full max-w-36 shrink-0 rounded-lg border border-border/40 bg-muted/20 overflow-hidden"
-                  >
-                    {preview.kind === "image" && !imagePreviewFailed && (
+                  <div className="min-h-[116px] rounded-xl border border-border/40 bg-muted/20 overflow-hidden">
+                    {preview.kind === "image" && !imagePreviewFailed ? (
                       <img
                         src={preview.src}
                         alt={file.originalFilename || file.title}
-                        className="h-full w-full object-cover"
+                        className="h-32 w-full object-cover"
                         loading="lazy"
                         onError={() => {
                           setFailedImagePreviews((prev) => ({ ...prev, [file.id]: true }));
                         }}
                       />
-                    )}
-
-                    {preview.kind === "pdf" && (
-                      <object data={preview.src} type="application/pdf" className="h-full w-full">
-                        <div className="h-full w-full flex items-center justify-center px-3 text-xs text-muted-foreground text-center">
-                          Предпросмотр PDF недоступен в текущем браузере.
-                        </div>
-                      </object>
-                    )}
-
-                    {preview.kind === "csv" && (
-                      <div className="h-full w-full overflow-auto">
-                        <table className="min-w-full text-xs border-collapse">
-                          <tbody>
-                            {preview.rows.map((row, rowIndex) => (
-                              <tr key={`${file.id}-row-${rowIndex}`} className={rowIndex === 0 ? "bg-muted/60" : ""}>
-                                {row.map((cell, cellIndex) => (
-                                  <td
-                                    key={`${file.id}-cell-${rowIndex}-${cellIndex}`}
-                                    className="border border-border/30 px-2 py-1 align-top max-w-[110px] truncate"
-                                    title={cell}
-                                  >
-                                    {cell || "—"}
-                                  </td>
-                                ))}
-                              </tr>
-                            ))}
-                          </tbody>
-                        </table>
+                    ) : previewText ? (
+                      <div className="p-2">
+                        {renderTextPreview(fileLike, "border-0 bg-transparent p-0")}
                       </div>
-                    )}
-
-                    {preview.kind === "text" && (
-                      <div className="h-full w-full overflow-auto">
-                        <pre className="p-2 text-[11px] text-muted-foreground whitespace-pre-wrap break-words leading-relaxed font-mono">
-                          {preview.text}
-                        </pre>
-                      </div>
-                    )}
-
-                    {(preview.kind === "none" || (preview.kind === "image" && imagePreviewFailed)) && (
-                      <div className="h-full w-full flex items-center justify-center px-3 text-xs text-muted-foreground text-center">
-                        {preview.kind === "image"
-                          ? "Не удалось загрузить превью изображения"
-                          : preview.message}
+                    ) : (
+                      <div className="flex h-32 flex-col items-center justify-center gap-2 px-3 text-center text-xs text-muted-foreground">
+                        <Icon className="h-7 w-7 opacity-70" />
+                        <span>
+                          {getFileKind(fileLike) === "pdf"
+                            ? "PDF откроется в большом просмотре"
+                            : getFileKind(fileLike) === "docx"
+                              ? "DOCX: текст появится после извлечения"
+                              : getFileKind(fileLike) === "spreadsheet"
+                                ? "Предпросмотр таблицы недоступен"
+                                : imagePreviewFailed
+                                  ? "Не удалось загрузить миниатюру"
+                                  : "Предпросмотр недоступен"}
+                        </span>
                       </div>
                     )}
                   </div>
 
-                  <p className="text-xs text-muted-foreground">
-                    {formatBytes(file.fileSize || 0)} • {(file.mimeType?.split("/")[1] || "file").toUpperCase()}
-                  </p>
+                  <div className="flex flex-wrap items-center gap-1.5">
+                    <Badge variant="outline" className={cn("max-w-full text-[10px] font-medium", status.className)}>
+                      {status.label}
+                    </Badge>
+                    <Badge variant="secondary" className="max-w-full text-[10px] font-medium">
+                      {getFileKindLabel(fileLike)}
+                    </Badge>
+                  </div>
                 </CardContent>
 
                 <CardFooter className="px-4 pb-3 pt-0 flex flex-col gap-2 items-stretch border-t border-border/10 pt-3 mt-auto">
@@ -759,22 +1042,53 @@ export default function FilesPage() {
                     </span>
                   </div>
 
-                  <Select
-                    value={file.folderId ? String(file.folderId) : "none"}
-                    onValueChange={(value) => handleMoveFile(file.id, value, file.folderId ?? null)}
-                  >
-                    <SelectTrigger className="h-8 text-xs">
-                      <SelectValue placeholder="Переместить в папку" />
-                    </SelectTrigger>
-                    <SelectContent>
-                      <SelectItem value="none">Без папки</SelectItem>
-                      {userFolders.map((folder) => (
-                        <SelectItem key={folder.id} value={String(folder.id)}>
-                          {folder.name}
-                        </SelectItem>
-                      ))}
-                    </SelectContent>
-                  </Select>
+                  <div className="grid grid-cols-2 gap-2">
+                    <Button
+                      type="button"
+                      size="sm"
+                      variant="outline"
+                      className="h-8 rounded-lg text-xs"
+                      onClick={(event) => {
+                        event.stopPropagation();
+                        setSelectedFile(fileLike);
+                      }}
+                    >
+                      <Eye className="mr-1.5 h-3.5 w-3.5" />
+                      Открыть
+                    </Button>
+                    <Button
+                      type="button"
+                      size="sm"
+                      variant="outline"
+                      className="h-8 rounded-lg text-xs"
+                      onClick={(event) => {
+                        event.stopPropagation();
+                        handleAskAi(fileLike);
+                      }}
+                    >
+                      <Sparkles className="mr-1.5 h-3.5 w-3.5" />
+                      Спросить AI
+                    </Button>
+                  </div>
+
+                  <div onClick={(event) => event.stopPropagation()}>
+                    <Select
+                      value={file.folderId ? String(file.folderId) : "none"}
+                      onValueChange={(value) => handleMoveFile(file.id, value, file.folderId ?? null)}
+                    >
+                      <SelectTrigger className="h-8 text-xs">
+                        <SelectValue placeholder="Переместить в папку" />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="none">Без папки</SelectItem>
+                        {userFolders.map((folder) => (
+                          <SelectItem key={folder.id} value={String(folder.id)}>
+                            {folder.name}
+                          </SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                  </div>
                 </CardFooter>
               </Card>
             );
@@ -782,6 +1096,104 @@ export default function FilesPage() {
         </div>
       )}
     </div>
+
+    <Dialog open={Boolean(selectedFile)} onOpenChange={(open) => !open && setSelectedFile(null)}>
+      <DialogContent className="flex h-[92dvh] w-[calc(100vw-1rem)] max-w-6xl flex-col overflow-hidden p-0 sm:h-[88dvh]">
+        {selectedFile ? (
+          <>
+            <DialogHeader className="border-b border-border/60 px-4 py-3 sm:px-5">
+              <div className="flex min-w-0 items-start justify-between gap-3 pr-8">
+                <div className="min-w-0">
+                  <DialogTitle className="truncate text-base sm:text-lg" title={selectedFile.originalFilename || selectedFile.title}>
+                    {selectedFile.originalFilename || selectedFile.title}
+                  </DialogTitle>
+                  <div className="mt-1 flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
+                    <span>{getFileKindLabel(selectedFile)}</span>
+                    <span>•</span>
+                    <span>{formatBytes(selectedFile.fileSize || 0)}</span>
+                    <span>•</span>
+                    <span>{getFileTypeLabel(selectedFile)}</span>
+                    {selectedFile.folderName ? (
+                      <>
+                        <span>•</span>
+                        <span>{selectedFile.folderName}</span>
+                      </>
+                    ) : null}
+                    {selectedFile.createdAt ? (
+                      <>
+                        <span>•</span>
+                        <span>{formatMoscowDateShort(selectedFile.createdAt)}</span>
+                      </>
+                    ) : null}
+                  </div>
+                </div>
+              </div>
+            </DialogHeader>
+
+            <div className="grid min-h-0 flex-1 grid-cols-1 lg:grid-cols-[minmax(0,1fr)_320px]">
+              <div className="min-h-0 overflow-auto bg-muted/20 p-3 sm:p-4">{renderLargePreview(selectedFile)}</div>
+
+              <aside className="min-h-0 overflow-auto border-t border-border/60 bg-background p-4 lg:border-l lg:border-t-0">
+                <div className="space-y-4">
+                  <div className="flex flex-wrap gap-1.5">
+                    <Badge variant="outline" className={cn("text-[10px] font-medium", getExtractionStatus(selectedFile).className)}>
+                      {getExtractionStatus(selectedFile).label}
+                    </Badge>
+                    <Badge variant="secondary" className="text-[10px] font-medium">
+                      {canPreviewInline(selectedFile) ? "Preview" : "Metadata"}
+                    </Badge>
+                  </div>
+
+                  <div className="space-y-2 text-sm">
+                    <div className="text-xs font-medium uppercase tracking-wide text-muted-foreground">Действия</div>
+                    <div className="grid grid-cols-1 gap-2">
+                      <Button variant="outline" className="justify-start gap-2" onClick={() => handleDownload(selectedFile)}>
+                        <Download className="h-4 w-4" />
+                        Скачать
+                      </Button>
+                      <Button variant="outline" className="justify-start gap-2" onClick={() => handleAskAi(selectedFile)}>
+                        <Sparkles className="h-4 w-4" />
+                        Спросить AI по файлу
+                      </Button>
+                      <Button
+                        variant="outline"
+                        className="justify-start gap-2"
+                        onClick={() => handleCopyExtractedText(selectedFile)}
+                        disabled={!getFilePreviewText(selectedFile, 20)}
+                      >
+                        <Copy className="h-4 w-4" />
+                        Скопировать текст
+                      </Button>
+                    </div>
+                  </div>
+
+                  <div className="space-y-2">
+                    <div className="text-xs font-medium uppercase tracking-wide text-muted-foreground">Извлеченный текст</div>
+                    {getFilePreviewText(selectedFile, 1200) ? (
+                      <pre className="max-h-64 overflow-auto whitespace-pre-wrap break-words rounded-lg border border-border/40 bg-muted/20 p-3 text-xs leading-relaxed text-muted-foreground">
+                        {getFilePreviewText(selectedFile, 1200)}
+                      </pre>
+                    ) : (
+                      <p className="rounded-lg border border-border/40 bg-muted/20 p-3 text-xs text-muted-foreground">
+                        Текстового preview пока нет. Файл можно открыть крупно, скачать или передать ассистенту как контекст по имени и метаданным.
+                      </p>
+                    )}
+                  </div>
+
+                  <div className="space-y-1 text-xs text-muted-foreground">
+                    <div className="font-medium text-foreground">Метаданные</div>
+                    <div>MIME: {selectedFile.mimeType || "unknown"}</div>
+                    <div>Размер: {formatBytes(selectedFile.fileSize || 0)}</div>
+                    <div>Папка: {selectedFile.folderName || "Без папки"}</div>
+                  </div>
+                </div>
+              </aside>
+            </div>
+          </>
+        ) : null}
+      </DialogContent>
+    </Dialog>
+    </>
   );
 }
 

@@ -1,6 +1,7 @@
 import { and, desc, eq, inArray } from "drizzle-orm";
 import { conversations, db, foldersTable, itemsTable, messages, type Item } from "@workspace/db";
 import { logger } from "./logger";
+import { canAttemptTextExtraction, extractTextFromUpload } from "./file-extraction";
 
 type SourceType = "folder" | "note" | "file" | "reminder" | "message";
 type QueryIntent = "notes" | "files" | "folders" | "reminders" | "saved" | "topic" | "general";
@@ -33,11 +34,15 @@ interface ContextItem {
   excerpt: string;
 }
 
-interface RelevantSource {
+export interface RelevantSource {
+  id?: number;
   type: SourceType;
   title: string;
   folder?: string;
+  folderName?: string;
   date?: string;
+  createdAt?: string;
+  updatedAt?: string;
   excerpt: string;
   score: number;
 }
@@ -193,8 +198,12 @@ function extractTextPreview(item: Item, maxLength = 900): string {
   }
 
   if (item.type === "file") {
+    const extractionStatus = item.summary?.startsWith("extractionStatus:")
+      ? `Extraction status: ${item.summary}`
+      : null;
+
     return truncateText(
-      [item.originalFilename ?? item.title, item.mimeType, formatFileSize(item.fileSize)].filter(Boolean).join(", "),
+      [item.originalFilename ?? item.title, item.mimeType, formatFileSize(item.fileSize), extractionStatus].filter(Boolean).join(", "),
       maxLength,
     );
   }
@@ -235,18 +244,87 @@ function scoreItem(query: string, terms: string[], item: Item, folderName: strin
   ]);
 }
 
+function shouldTryFileTextBackfill(query: string): boolean {
+  return /(перескажи|прочитай|содержание|содержимое|что\s+в|файл|документ|pdf|docx)/i.test(query);
+}
+
+async function backfillExtractedTextForRelevantFiles({
+  userId,
+  items,
+  folderMap,
+  currentMessage,
+  terms,
+}: {
+  userId: number;
+  items: Item[];
+  folderMap: Map<number, string>;
+  currentMessage: string;
+  terms: string[];
+}): Promise<void> {
+  if (!shouldTryFileTextBackfill(currentMessage)) return;
+
+  const candidates = items
+    .filter((item) => {
+      if (item.type !== "file" || item.content?.trim() || !item.fileData) return false;
+      return canAttemptTextExtraction(item.originalFilename ?? item.title, item.mimeType);
+    })
+    .map((item) => {
+      const folderName = folderMap.get(item.folderId ?? 0) ?? "";
+      const score = scoreText(currentMessage, terms, [
+        { value: item.title, weight: 4 },
+        { value: item.originalFilename ?? "", weight: 4 },
+        { value: folderName, weight: 2 },
+        { value: item.mimeType ?? "", weight: 2 },
+        { value: item.summary ?? "", weight: 1 },
+      ]);
+      return { item, score };
+    })
+    .filter((entry) => entry.score > 0 || terms.length === 0)
+    .sort((a, b) => b.score - a.score)
+    .slice(0, 6);
+
+  for (const { item } of candidates) {
+    const filename = item.originalFilename ?? item.title;
+    const extraction = await extractTextFromUpload(filename, item.mimeType ?? "application/octet-stream", item.fileData);
+
+    await db
+      .update(itemsTable)
+      .set({ content: extraction.text, summary: extraction.summary })
+      .where(and(eq(itemsTable.id, item.id), eq(itemsTable.userId, userId), eq(itemsTable.type, "file")));
+
+    item.content = extraction.text;
+    item.summary = extraction.summary;
+
+    logger.info(
+      {
+        userId,
+        itemId: item.id,
+        filename,
+        extractionStatus: extraction.status,
+        extractedChars: extraction.text?.length ?? 0,
+      },
+      "[assistant-context] lazy file text extraction",
+    );
+  }
+}
+
 function sourceFromItem(item: Item, folder: string, score: number): RelevantSource {
   return {
+    id: item.id,
     type: item.type,
     title: item.type === "file" ? item.originalFilename ?? item.title : item.title,
     folder,
+    folderName: folder,
     date: formatDate(item.updatedAt),
+    createdAt: item.createdAt.toISOString(),
+    updatedAt: item.updatedAt.toISOString(),
     excerpt: extractTextPreview(item),
     score,
   };
 }
 
 function sourceKey(source: RelevantSource): string {
+  if (source.id) return `${source.type}:${source.id}`;
   return `${source.type}:${source.title}:${source.folder ?? ""}:${source.date ?? ""}`;
 }
 
@@ -296,6 +374,15 @@ export async function buildAssistantContext(
     const notes = allItems.filter((item) => item.type === "note");
     const files = allItems.filter((item) => item.type === "file");
     const reminders = allItems.filter((item) => item.type === "reminder");
+    const terms = getSearchTerms(currentMessage);
+
+    await backfillExtractedTextForRelevantFiles({
+      userId,
+      items: allItems,
+      folderMap,
+      currentMessage,
+      terms,
+    });
 
     const recentNotes = notes.slice(0, maxRecentItems).map((item) => ({
       type: "note" as const,
@@ -354,13 +441,13 @@ export async function buildAssistantContext(
             .limit(400)
         : [];
 
-    const terms = getSearchTerms(currentMessage);
     const relevantSources: RelevantSource[] = [];
 
     for (const folder of userFolders) {
       const score = scoreText(currentMessage, terms, [{ value: folder.name, weight: 4 }]);
       if (score > 0 || requestedTypes.includes("folder") || queryIntent === "folders" || queryIntent === "saved") {
         relevantSources.push({
+          id: folder.id,
           type: "folder",
           title: folder.name,
           excerpt: `Папка пользователя, объектов: ${folder.itemCount}`,
@@ -401,6 +488,7 @@ export async function buildAssistantContext(
       const score = scoreText(currentMessage, terms, [{ value: message.content, weight: 1 }]);
       if (score > 0) {
         relevantSources.push({
+          id: message.id,
           type: "message",
           title: message.role === "assistant" ? "Ответ ассистента из другого чата" : "Сообщение пользователя из другого чата",
           date: formatDate(message.createdAt),

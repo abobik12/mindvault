@@ -375,7 +375,7 @@ export default function FolderPage() {
     <div className="h-full min-h-0 flex flex-col p-4 sm:p-6 bg-slate-50/50 dark:bg-transparent overflow-y-auto">
       <div className="flex flex-col sm:flex-row sm:flex-wrap sm:items-center justify-between gap-4 mb-6">
         <div>
-          <h1 className="text-2xl sm:text-3xl font-serif font-bold tracking-tight text-foreground flex items-center gap-2 min-w-0">
+          <h1 className="text-2xl sm:text-3xl font-bold tracking-tight text-foreground flex items-center gap-2 min-w-0">
             <FolderIcon className="w-7 h-7 text-primary" />
             <span className="truncate">{folder.name}</span>
           </h1>

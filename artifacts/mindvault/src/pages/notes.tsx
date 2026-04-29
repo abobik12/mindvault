@@ -129,7 +129,7 @@ export default function NotesPage() {
     <div className="h-full min-h-0 flex flex-col p-4 sm:p-6 bg-slate-50/50 dark:bg-transparent overflow-y-auto">
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 mb-6 sm:mb-8">
         <div>
-          <h1 className="text-2xl sm:text-3xl font-serif font-bold tracking-tight text-foreground">Заметки</h1>
+          <h1 className="text-2xl sm:text-3xl font-bold tracking-tight text-foreground">Заметки</h1>
           <p className="text-muted-foreground text-sm mt-1">Сохраняйте мысли, планы и идеи в одном месте.</p>
         </div>
 

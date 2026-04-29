@@ -1,5 +1,5 @@
 ﻿import { Router, type IRouter } from "express";
-import { eq, and, desc } from "drizzle-orm";
+import { eq, and, desc, inArray } from "drizzle-orm";
 import { db, conversations, messages, itemsTable, foldersTable } from "@workspace/db";
 import { requireAuth } from "../middlewares/auth";
 import { ai } from "@workspace/integrations-gemini-ai";
@@ -19,14 +19,28 @@ import {
   parseReminderDateTime,
 } from "../lib/time";
 import { buildAssistantContext, formatContextForPrompt, type UserContextData } from "../lib/ai-context";
+import { canAttemptTextExtraction, extractTextFromUpload } from "../lib/file-extraction";
+import {
+  classifyAndExecuteAssistantAction,
+  type AssistantActionContext,
+  type AssistantActionIntent,
+} from "../assistant/actions";
 
 const router: IRouter = Router();
 const OPENAI_TEXT_MODEL = process.env.OPENAI_MODEL || "gpt-4.1-mini";
+const DEFAULT_CONVERSATION_TITLE = "MindVault Assistant";
+const ATTACHMENT_TEXT_LIMIT = 12000;
 const DEFAULT_ASSISTANT_SYSTEM_PROMPT = `Ты — ассистент MindVault, персонального рабочего кабинета пользователя.
 
 Твоя задача:
 - отвечать дружелюбно и по делу;
 - помогать структурировать мысли, заметки и напоминания;
+- MindVault — персональная база знаний пользователя: заметки, файлы, папки, напоминания и история чата;
+- если тебе передан контекст MindVault, используй его как источник правды и кратко называй источники;
+- не выдумывай сохраненные данные и содержимое файлов;
+- нельзя говорить "создал", "изменил", "удалил", "перенес", "сохранил" или "готово", если backend-action не подтвердил success;
+- если нужно изменить или удалить объект, сначала он должен быть найден в данных пользователя;
+- если найдено несколько объектов, попроси уточнить; если объект не найден, честно скажи об этом;
 - использовать ясные формулировки на русском языке;
 - не добавлять лишнюю воду.
 
@@ -45,24 +59,22 @@ const ACTION_ON_EXISTING_RE =
 const AMBIGUOUS_REMINDER_RE =
   /(завтра|послезавтра|в\s+(понедельник|вторник|среду|четверг|пятницу|субботу|воскресенье)|через\s+\d+)/i;
 
-type IntentType = "chat_only" | "save_note" | "save_reminder" | "save_file" | "action_on_existing";
+type IntentType = AssistantActionIntent | "chat_only" | "save_note" | "save_reminder" | "save_file" | "action_on_existing";
 type ResponseMode = "reply_only" | "saved" | "suggest_actions" | "action_executed";
 
-type AssistantContext = {
-  intentType: IntentType;
-  responseMode: ResponseMode;
-  autoSaved?: boolean;
-  assistantReply?: string;
-  savedItem?: {
-    id: number;
-    type: "note" | "file" | "reminder";
-    title: string;
-    folderId: number | null;
-    folderName: string | null;
-    reminderAt?: string | null;
-  } | null;
-  suggestedActions?: Array<"save_note" | "save_reminder" | "ignore">;
-} | null;
+type ChatAttachment = {
+  id: number;
+  name: string;
+  mimeType: string | null;
+  fileSize: number | null;
+  folderId: number | null;
+  folderName: string | null;
+  textPreview: string | null;
+  extractionSummary: string | null;
+  createdAt: string;
+};
+
+type AssistantContext = AssistantActionContext | null;
 
 function looksLikeFutureReminderIntent(content: string): boolean {
   const normalized = content.toLowerCase();
@@ -77,13 +89,7 @@ function sanitizeAssistantContext(raw: unknown): AssistantContext {
 
   const intentType = source.intentType;
   const responseMode = source.responseMode;
-  if (
-    intentType !== "chat_only" &&
-    intentType !== "save_note" &&
-    intentType !== "save_reminder" &&
-    intentType !== "save_file" &&
-    intentType !== "action_on_existing"
-  ) {
+  if (typeof intentType !== "string" || intentType.length > 80) {
     return null;
   }
   if (
@@ -127,7 +133,7 @@ function sanitizeAssistantContext(raw: unknown): AssistantContext {
     : undefined;
 
   return {
-    intentType,
+    intentType: intentType as IntentType,
     responseMode,
     autoSaved: source.autoSaved === true,
     assistantReply:
@@ -136,6 +142,14 @@ function sanitizeAssistantContext(raw: unknown): AssistantContext {
         : undefined,
     savedItem,
     suggestedActions: suggestedActions && suggestedActions.length > 0 ? suggestedActions : undefined,
+    pendingAction:
+      source.pendingAction && typeof source.pendingAction === "object"
+        ? (source.pendingAction as AssistantActionContext["pendingAction"])
+        : undefined,
+    actionResult:
+      source.actionResult && typeof source.actionResult === "object"
+        ? (source.actionResult as AssistantActionContext["actionResult"])
+        : undefined,
   };
 }
 
@@ -279,6 +293,178 @@ function buildOfflineAssistantReply(userMessage: string, reason?: string, contex
   ].join("\n");
 }
 
+async function getOrCreateDefaultConversation(userId: number) {
+  const [existingConversation] = await db
+    .select()
+    .from(conversations)
+    .where(and(eq(conversations.userId, userId), eq(conversations.title, DEFAULT_CONVERSATION_TITLE)))
+    .orderBy(desc(conversations.createdAt))
+    .limit(1);
+
+  if (existingConversation) return existingConversation;
+
+  const [createdConversation] = await db
+    .insert(conversations)
+    .values({ userId, title: DEFAULT_CONVERSATION_TITLE })
+    .returning();
+
+  return createdConversation;
+}
+
+function getAttachmentIds(raw: unknown): number[] {
+  if (!Array.isArray(raw)) return [];
+
+  const ids = raw
+    .map((entry) => {
+      if (!entry || typeof entry !== "object") return null;
+      const rawId = (entry as Record<string, unknown>).id;
+      return typeof rawId === "number" && Number.isInteger(rawId) ? rawId : null;
+    })
+    .filter((id): id is number => id !== null);
+
+  return Array.from(new Set(ids)).slice(0, 5);
+}
+
+async function getValidatedAttachments(userId: number, raw: unknown): Promise<ChatAttachment[]> {
+  const ids = getAttachmentIds(raw);
+  if (ids.length === 0) return [];
+
+  const files = await db
+    .select({
+      id: itemsTable.id,
+      title: itemsTable.title,
+      originalFilename: itemsTable.originalFilename,
+      mimeType: itemsTable.mimeType,
+      fileSize: itemsTable.fileSize,
+      content: itemsTable.content,
+      summary: itemsTable.summary,
+      fileData: itemsTable.fileData,
+      folderId: itemsTable.folderId,
+      folderName: foldersTable.name,
+      createdAt: itemsTable.createdAt,
+    })
+    .from(itemsTable)
+    .leftJoin(foldersTable, eq(itemsTable.folderId, foldersTable.id))
+    .where(and(eq(itemsTable.userId, userId), eq(itemsTable.type, "file"), inArray(itemsTable.id, ids)));
+
+  const attachments: ChatAttachment[] = [];
+
+  for (const file of files) {
+    const name = file.originalFilename || file.title;
+    let content = file.content;
+    let summary = file.summary;
+
+    if (!content?.trim() && file.fileData && canAttemptTextExtraction(name, file.mimeType)) {
+      const extraction = await extractTextFromUpload(name, file.mimeType || "application/octet-stream", file.fileData);
+      content = extraction.text;
+      summary = extraction.summary;
+      await db
+        .update(itemsTable)
+        .set({ content: extraction.text, summary: extraction.summary })
+        .where(and(eq(itemsTable.id, file.id), eq(itemsTable.userId, userId), eq(itemsTable.type, "file")));
+    }
+
+    attachments.push({
+      id: file.id,
+      name,
+      mimeType: file.mimeType,
+      fileSize: file.fileSize,
+      folderId: file.folderId,
+      folderName: file.folderName,
+      textPreview: content ? content.slice(0, ATTACHMENT_TEXT_LIMIT) : null,
+      extractionSummary: summary ?? null,
+      createdAt: file.createdAt.toISOString(),
+    });
+  }
+
+  return attachments;
+}
+
+function formatAttachmentsForPrompt(attachments: ChatAttachment[]): string {
+  if (attachments.length === 0) return "";
+
+  const lines = [
+    "",
+    "PRIORITY ATTACHED FILE CONTEXT:",
+    "The user attached these file(s) to the current message. If the user says this file/document, they mean these attachments. Use this section before older saved data.",
+  ];
+
+  for (const attachment of attachments) {
+    lines.push(`- File: ${attachment.name}`);
+    lines.push(`  ID: ${attachment.id}`);
+    lines.push(`  MIME: ${attachment.mimeType || "unknown"}`);
+    lines.push(`  Size: ${attachment.fileSize ?? "unknown"} bytes`);
+    lines.push(`  Folder: ${attachment.folderName || "none"}`);
+    if (attachment.textPreview?.trim()) {
+      lines.push("  Extracted text preview:");
+      lines.push(attachment.textPreview);
+    } else {
+      lines.push(
+        `  Extracted text preview: unavailable${attachment.extractionSummary ? ` (${attachment.extractionSummary})` : ""}. Do not invent file contents; use only the filename and metadata.`,
+      );
+    }
+  }
+
+  return `\n\n${lines.join("\n")}`;
+}
+
+function getAttachmentsFromMetadata(metadata: unknown): ChatAttachment[] {
+  if (!metadata || typeof metadata !== "object") return [];
+  const rawAttachments = (metadata as Record<string, unknown>).attachments;
+  if (!Array.isArray(rawAttachments)) return [];
+
+  return rawAttachments
+    .map((entry) => {
+      if (!entry || typeof entry !== "object") return null;
+      const source = entry as Record<string, unknown>;
+      if (typeof source.id !== "number" || typeof source.name !== "string") return null;
+      return {
+        id: source.id,
+        name: source.name,
+        mimeType: typeof source.mimeType === "string" ? source.mimeType : null,
+        fileSize: typeof source.fileSize === "number" ? source.fileSize : null,
+        folderId: typeof source.folderId === "number" ? source.folderId : null,
+        folderName: typeof source.folderName === "string" ? source.folderName : null,
+        textPreview: typeof source.textPreview === "string" ? source.textPreview.slice(0, 2000) : null,
+        extractionSummary: typeof source.extractionSummary === "string" ? source.extractionSummary : null,
+        createdAt: typeof source.createdAt === "string" ? source.createdAt : "",
+      } satisfies ChatAttachment;
+    })
+    .filter((entry): entry is ChatAttachment => entry !== null);
+}
+
+function formatMessageForModel(content: string, metadata: unknown): string {
+  const attachments = getAttachmentsFromMetadata(metadata);
+  if (attachments.length === 0) return content;
+
+  const names = attachments.map((attachment) => attachment.name).join(", ");
+  return `${content}\n\nAttached files in this message: ${names}`;
+}
+
+function buildAssistantMessageMetadata(
+  assistantContext: AssistantContext,
+  userContext?: UserContextData,
+): AssistantContext | (Record<string, unknown> & { sources?: unknown[] }) | null {
+  const sources =
+    userContext?.relevantSources.slice(0, 8).map((source) => ({
+      id: source.id ?? null,
+      type: source.type,
+      title: source.title,
+      snippet: source.excerpt.slice(0, 360),
+      folderName: source.folderName ?? source.folder ?? null,
+      date: source.date ?? null,
+      createdAt: source.createdAt ?? null,
+      updatedAt: source.updatedAt ?? null,
+      score: source.score,
+    })) ?? [];
+
+  if (sources.length === 0) return assistantContext;
+  return {
+    ...(assistantContext ?? {}),
+    sources,
+  };
+}
+
 router.get("/gemini/conversations", requireAuth, async (req, res): Promise<void> => {
   const convs = await db
     .select()
@@ -314,6 +500,30 @@ router.post("/gemini/conversations", requireAuth, async (req, res): Promise<void
     id: conversation.id,
     title: conversation.title,
     createdAt: conversation.createdAt.toISOString(),
+  });
+});
+
+router.get("/gemini/conversations/default", requireAuth, async (req, res): Promise<void> => {
+  const conversation = await getOrCreateDefaultConversation(req.auth!.userId);
+
+  const conversationMessages = await db
+    .select()
+    .from(messages)
+    .where(eq(messages.conversationId, conversation.id))
+    .orderBy(messages.createdAt);
+
+  res.json({
+    id: conversation.id,
+    title: conversation.title,
+    createdAt: conversation.createdAt.toISOString(),
+    messages: conversationMessages.map((message) => ({
+      id: message.id,
+      conversationId: message.conversationId,
+      role: message.role,
+      content: message.content,
+      metadata: message.metadata ?? null,
+      createdAt: message.createdAt.toISOString(),
+    })),
   });
 });
 
@@ -376,6 +586,40 @@ router.delete("/gemini/conversations/:id", requireAuth, async (req, res): Promis
   res.sendStatus(204);
 });
 
+router.delete("/gemini/messages/:id", requireAuth, async (req, res): Promise<void> => {
+  const rawMessageId = Array.isArray(req.params.id) ? req.params.id[0] : req.params.id;
+  const messageId = Number.parseInt(rawMessageId ?? "", 10);
+  if (!Number.isInteger(messageId)) {
+    res.status(400).json({ error: "Некорректные данные запроса" });
+    return;
+  }
+
+  const [message] = await db
+    .select({ id: messages.id, conversationId: messages.conversationId })
+    .from(messages)
+    .where(eq(messages.id, messageId))
+    .limit(1);
+
+  if (!message) {
+    res.status(404).json({ error: "Сообщение не найдено" });
+    return;
+  }
+
+  const [conversation] = await db
+    .select({ id: conversations.id })
+    .from(conversations)
+    .where(and(eq(conversations.id, message.conversationId), eq(conversations.userId, req.auth!.userId)))
+    .limit(1);
+
+  if (!conversation) {
+    res.status(404).json({ error: "Сообщение не найдено" });
+    return;
+  }
+
+  await db.delete(messages).where(eq(messages.id, message.id));
+  res.sendStatus(204);
+});
+
 router.get("/gemini/conversations/:id/messages", requireAuth, async (req, res): Promise<void> => {
   const params = ListGeminiMessagesParams.safeParse(req.params);
   if (!params.success) {
@@ -412,6 +656,28 @@ router.get("/gemini/conversations/:id/messages", requireAuth, async (req, res): 
   );
 });
 
+router.delete("/gemini/conversations/:id/messages", requireAuth, async (req, res): Promise<void> => {
+  const params = ListGeminiMessagesParams.safeParse(req.params);
+  if (!params.success) {
+    res.status(400).json({ error: "Некорректные данные запроса" });
+    return;
+  }
+
+  const [conversation] = await db
+    .select({ id: conversations.id })
+    .from(conversations)
+    .where(and(eq(conversations.id, params.data.id), eq(conversations.userId, req.auth!.userId)))
+    .limit(1);
+
+  if (!conversation) {
+    res.status(404).json({ error: "Диалог не найден" });
+    return;
+  }
+
+  await db.delete(messages).where(eq(messages.conversationId, conversation.id));
+  res.sendStatus(204);
+});
+
 router.post("/gemini/conversations/:id/messages", requireAuth, async (req, res): Promise<void> => {
   const params = SendGeminiMessageParams.safeParse(req.params);
   if (!params.success) {
@@ -437,13 +703,36 @@ router.post("/gemini/conversations/:id/messages", requireAuth, async (req, res):
     return;
   }
 
+  const attachments = await getValidatedAttachments(
+    req.auth!.userId,
+    (req.body as Record<string, unknown>)?.attachments,
+  );
+  const attachmentMetadata = attachments.length > 0 ? { attachments } : null;
+  const attachmentContext = formatAttachmentsForPrompt(attachments);
+  const messageForContextSearch = [bodyParsed.data.content, ...attachments.map((attachment) => attachment.name)]
+    .filter(Boolean)
+    .join(" ");
+
+  if (attachments.length > 0) {
+    logger.info(
+      {
+        userId: req.auth!.userId,
+        conversationId: conversation.id,
+        attachmentCount: attachments.length,
+        attachmentNames: attachments.map((attachment) => attachment.name).join(", "),
+        attachmentContextChars: attachmentContext.length,
+      },
+      "[assistant-context] attached files for chat message",
+    );
+  }
+
   await db
     .insert(messages)
     .values({
       conversationId: conversation.id,
       role: "user",
       content: bodyParsed.data.content,
-      metadata: null,
+      metadata: attachmentMetadata,
     })
     .returning();
 
@@ -452,6 +741,18 @@ router.post("/gemini/conversations/:id/messages", requireAuth, async (req, res):
     .from(messages)
     .where(eq(messages.conversationId, conversation.id))
     .orderBy(messages.createdAt);
+
+  const userContext = await buildAssistantContext(
+    req.auth!.userId,
+    messageForContextSearch,
+    conversation.id,
+    {
+      maxRecentItems: 12,
+      maxSearchResults: 20,
+      includeArchived: false,
+    },
+  );
+  const assistantMessageMetadata = buildAssistantMessageMetadata(assistantContext, userContext);
 
   const systemPrompt =
     process.env.ASSISTANT_SYSTEM_PROMPT?.trim() || DEFAULT_ASSISTANT_SYSTEM_PROMPT;
@@ -469,7 +770,7 @@ router.post("/gemini/conversations/:id/messages", requireAuth, async (req, res):
       conversationId: conversation.id,
       role: "assistant",
       content: deterministicReply,
-      metadata: assistantContext,
+      metadata: assistantMessageMetadata,
     });
 
     res.write(`data: ${JSON.stringify({ content: deterministicReply })}\n\n`);
@@ -477,17 +778,6 @@ router.post("/gemini/conversations/:id/messages", requireAuth, async (req, res):
     res.end();
     return;
   }
-
-  const userContext = await buildAssistantContext(
-    req.auth!.userId,
-    bodyParsed.data.content,
-    conversation.id,
-    {
-      maxRecentItems: 12,
-      maxSearchResults: 20,
-      includeArchived: false,
-    },
-  );
 
   const contextForPrompt = formatContextForPrompt(userContext);
   logger.info(
@@ -502,7 +792,10 @@ router.post("/gemini/conversations/:id/messages", requireAuth, async (req, res):
   );
 
   try {
-    const systemPromptWithContext = systemPrompt + contextForPrompt;
+    const systemPromptWithContext = systemPrompt + contextForPrompt + attachmentContext;
+    const currentUserContent = attachmentContext
+      ? `${bodyParsed.data.content}${attachmentContext}`
+      : bodyParsed.data.content;
 
     const contentsForGemini = [
       { role: "user" as const, parts: [{ text: systemPromptWithContext }] },
@@ -512,9 +805,9 @@ router.post("/gemini/conversations/:id/messages", requireAuth, async (req, res):
       },
       ...chatHistory.slice(0, -1).map((message) => ({
         role: (message.role === "assistant" ? "model" : "user") as "user" | "model",
-        parts: [{ text: message.content }],
+        parts: [{ text: formatMessageForModel(message.content, message.metadata) }],
       })),
-      { role: "user" as const, parts: [{ text: bodyParsed.data.content }] },
+      { role: "user" as const, parts: [{ text: currentUserContent }] },
     ];
 
     const stream = await ai.models.generateContentStream({
@@ -535,10 +828,10 @@ router.post("/gemini/conversations/:id/messages", requireAuth, async (req, res):
       conversationId: conversation.id,
       role: "assistant",
       content: fullResponse,
-      metadata: assistantContext,
+      metadata: assistantMessageMetadata,
     });
 
-    if (chatHistory.length <= 2) {
+    if (chatHistory.length <= 2 && conversation.title !== DEFAULT_CONVERSATION_TITLE) {
       const titlePrompt = `Сформируй короткий заголовок диалога (4-6 слов) по сообщению: \"${bodyParsed.data.content.slice(0, 100)}\". Ответь только заголовком, без кавычек.`;
       try {
         const titleResponse = await ai.models.generateContent({
@@ -561,12 +854,16 @@ router.post("/gemini/conversations/:id/messages", requireAuth, async (req, res):
 
     const errorMessage =
       err instanceof Error ? err.message : typeof err === "string" ? err : undefined;
-    const fallbackResponse = buildOfflineAssistantReply(bodyParsed.data.content, errorMessage, userContext);
+    const fallbackResponse = buildOfflineAssistantReply(
+      attachmentContext ? `${bodyParsed.data.content}${attachmentContext}` : bodyParsed.data.content,
+      errorMessage,
+      userContext,
+    );
     await db.insert(messages).values({
       conversationId: conversation.id,
       role: "assistant",
       content: fallbackResponse,
-      metadata: assistantContext,
+      metadata: assistantMessageMetadata,
     });
 
     res.write(`data: ${JSON.stringify({ content: fallbackResponse })}\n\n`);
@@ -600,6 +897,31 @@ router.post("/gemini/classify", requireAuth, async (req, res): Promise<void> => 
     }
     contextualFolderId = requestedFolder.id;
   }
+
+  const actionResult = await classifyAndExecuteAssistantAction({
+    userId,
+    content,
+    conversationId: parsed.data.conversationId,
+    folderId: contextualFolderId,
+  });
+
+  logger.info(
+    {
+      userId,
+      conversationId: parsed.data.conversationId,
+      intent: actionResult.intentType,
+      confidence: actionResult.confidence,
+      responseMode: actionResult.responseMode,
+      actionSuccess: actionResult.assistantContext.actionResult?.success ?? actionResult.handled,
+      savedItemTitle:
+        actionResult.assistantContext.savedItem?.title ??
+        (typeof actionResult.savedItem?.title === "string" ? actionResult.savedItem.title : null),
+    },
+    "[assistant] intent routed",
+  );
+
+  res.json(actionResult);
+  return;
 
   const folderNames = userFolders.map((folder) => folder.name).join(", ");
 
