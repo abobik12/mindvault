@@ -15,6 +15,9 @@ export type ParsedReminder = {
   text: string;
 };
 
+export const DEFAULT_REMINDER_HOUR = 9;
+export const DEFAULT_REMINDER_MINUTE = 0;
+
 export function normalizeText(value: string): string {
   return value.toLowerCase().replace(/ё/g, "е").replace(/\s+/g, " ").trim();
 }
@@ -139,6 +142,35 @@ function moscowLocalDate(dayOffset = 0, hour = 9, minute = 0): Date {
   return new Date(utc);
 }
 
+function moscowDateFromParts(day: number, month: number, year: number | null, hour = DEFAULT_REMINDER_HOUR, minute = DEFAULT_REMINDER_MINUTE): Date | null {
+  const now = getMoscowParts();
+  let targetYear = year ?? now.year;
+
+  const build = (selectedYear: number) => {
+    const utc = Date.UTC(selectedYear, month - 1, day, hour - 3, minute, 0, 0);
+    const date = new Date(utc);
+    const parts = getMoscowParts(date);
+    if (parts.year !== selectedYear || parts.month !== month || parts.day !== day) return null;
+    return date;
+  };
+
+  let result = build(targetYear);
+  if (!result) return null;
+
+  if (year === null) {
+    const isPast =
+      targetYear < now.year ||
+      (targetYear === now.year &&
+        (month < now.month || (month === now.month && day < now.day)));
+    if (isPast) {
+      targetYear += 1;
+      result = build(targetYear);
+    }
+  }
+
+  return result;
+}
+
 export function parseReminderCommand(text: string): ParsedReminder {
   let rest = ` ${text} `;
   const normalized = normalizeText(text);
@@ -157,8 +189,8 @@ export function parseReminderCommand(text: string): ParsedReminder {
 
   const explicitTime = /(?:^|\s)в\s*(\d{1,2})(?::|\.?)(\d{2})?\b/i.exec(text);
   const hasTime = Boolean(explicitTime);
-  const hour = explicitTime ? Number(explicitTime[1]) : 9;
-  const minute = explicitTime?.[2] ? Number(explicitTime[2]) : 0;
+  const hour = explicitTime ? Number(explicitTime[1]) : DEFAULT_REMINDER_HOUR;
+  const minute = explicitTime?.[2] ? Number(explicitTime[2]) : DEFAULT_REMINDER_MINUTE;
 
   const relativeDays = /через\s+(\d+|один|одну|два|две)\s+д(?:ень|ня|ней)/i.exec(normalized);
   let dayOffset: number | null = null;
@@ -173,7 +205,7 @@ export function parseReminderCommand(text: string): ParsedReminder {
       .replace(/через\s+(\d+|один|одну|два|две)\s+д(?:ень|ня|ней)/gi, " ");
     if (explicitTime) rest = rest.replace(/(?:^|\s)в\s*\d{1,2}(?::|\.?)\d{0,2}\b/i, " ");
     return {
-      reminderAt: hasTime ? moscowLocalDate(dayOffset, hour, minute) : null,
+      reminderAt: moscowLocalDate(dayOffset, hour, minute),
       hasDate: true,
       hasTime,
       text: compact(rest),
@@ -198,11 +230,75 @@ export function parseReminderCommand(text: string): ParsedReminder {
     rest = rest.replace(new RegExp(`в?\\s*${weekday.key}`, "i"), " ");
     if (explicitTime) rest = rest.replace(/(?:^|\s)в\s*\d{1,2}(?::|\.?)\d{0,2}\b/i, " ");
     return {
-      reminderAt: hasTime ? moscowLocalDate(offset, hour, minute) : null,
+      reminderAt: moscowLocalDate(offset, hour, minute),
       hasDate: true,
       hasTime,
       text: compact(rest),
     };
+  }
+
+  const monthNames: Record<string, number> = {
+    января: 1,
+    январь: 1,
+    февраля: 2,
+    февраль: 2,
+    марта: 3,
+    март: 3,
+    апреля: 4,
+    апрель: 4,
+    мая: 5,
+    май: 5,
+    июня: 6,
+    июнь: 6,
+    июля: 7,
+    июль: 7,
+    августа: 8,
+    август: 8,
+    сентября: 9,
+    сентябрь: 9,
+    октября: 10,
+    октябрь: 10,
+    ноября: 11,
+    ноябрь: 11,
+    декабря: 12,
+    декабрь: 12,
+  };
+  const monthNamePattern = Object.keys(monthNames).join("|");
+  const namedDate = new RegExp(`(?:^|\\s)(\\d{1,2})\\s+(${monthNamePattern})(?:\\s+(\\d{4}))?(?=\\s|$)`, "i").exec(normalized);
+  if (namedDate) {
+    const day = Number(namedDate[1]);
+    const month = monthNames[namedDate[2]];
+    const year = namedDate[3] ? Number(namedDate[3]) : null;
+    const reminderAt = moscowDateFromParts(day, month, year, hour, minute);
+    if (reminderAt) {
+      rest = rest.replace(new RegExp(`(^|\\s)${day}\\s+${namedDate[2]}(?:\\s+${namedDate[3]})?(?=\\s|$)`, "i"), " ");
+      if (explicitTime) rest = rest.replace(/(?:^|\s)в\s*\d{1,2}(?::|\.?)\d{0,2}\b/i, " ");
+      return {
+        reminderAt,
+        hasDate: true,
+        hasTime,
+        text: compact(rest),
+      };
+    }
+  }
+
+  const numericDate = /(?:^|\s)(\d{1,2})[./](\d{1,2})(?:[./](\d{2,4}))?(?=\s|$)/.exec(normalized);
+  if (numericDate) {
+    const day = Number(numericDate[1]);
+    const month = Number(numericDate[2]);
+    const rawYear = numericDate[3];
+    const year = rawYear ? Number(rawYear.length === 2 ? `20${rawYear}` : rawYear) : null;
+    const reminderAt = moscowDateFromParts(day, month, year, hour, minute);
+    if (reminderAt) {
+      rest = rest.replace(/\b\d{1,2}[./]\d{1,2}(?:[./]\d{2,4})?\b/i, " ");
+      if (explicitTime) rest = rest.replace(/(?:^|\s)в\s*\d{1,2}(?::|\.?)\d{0,2}\b/i, " ");
+      return {
+        reminderAt,
+        hasDate: true,
+        hasTime,
+        text: compact(rest),
+      };
+    }
   }
 
   if (explicitTime) rest = rest.replace(/(?:^|\s)в\s*\d{1,2}(?::|\.?)\d{0,2}\b/i, " ");

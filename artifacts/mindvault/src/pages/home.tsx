@@ -154,6 +154,11 @@ type PendingAction =
   | {
       action: "clear_chat";
       conversationId: number;
+    }
+  | {
+      action: "create_reminder";
+      text: string;
+      reminderAt?: string | null;
     };
 
 type ActionResult = {
@@ -349,6 +354,12 @@ function readAssistantContext(raw: unknown): AssistantMessageContext | null {
       pendingAction = {
         action: "clear_chat",
         conversationId: action.conversationId,
+      };
+    } else if (action.action === "create_reminder" && typeof action.text === "string") {
+      pendingAction = {
+        action: "create_reminder",
+        text: action.text,
+        reminderAt: typeof action.reminderAt === "string" ? action.reminderAt : null,
       };
     }
   }
@@ -1445,11 +1456,17 @@ export default function Home() {
         ? "Очистить историю чата?"
         : pending.action === "delete_folder"
           ? `Удалить папку «${pending.title}»?`
-          : `Удалить ${pending.itemType === "file" ? "файл" : pending.itemType === "reminder" ? "напоминание" : pending.itemType === "list" ? "список" : "заметку"} «${pending.title}»?`;
+          : pending.action === "create_reminder"
+            ? `Создать напоминание «${pending.text}»?`
+            : `Удалить ${pending.itemType === "file" ? "файл" : pending.itemType === "reminder" ? "напоминание" : pending.itemType === "list" ? "список" : "заметку"} «${pending.title}»?`;
     const hint =
       pending.action === "clear_chat"
         ? "Заметки, файлы, папки и напоминания не будут удалены."
-        : "Действие будет выполнено только после подтверждения.";
+        : pending.action === "create_reminder"
+          ? pending.reminderAt
+            ? "Нажмите «Подтвердить» или напишите «да», чтобы создать объект."
+            : "Укажите дату сообщением в чат, например: 29 июня или завтра в 10:00."
+          : "Действие будет выполнено только после подтверждения.";
 
     return (
       <div className="mt-2 w-full rounded-xl border border-amber-200 bg-amber-50/80 px-3 py-2 text-xs text-amber-950">
@@ -1463,7 +1480,7 @@ export default function Home() {
             onClick={() => handleSend("да")}
             disabled={isStreaming}
           >
-            Подтвердить
+            Да
           </Button>
           <Button
             type="button"
@@ -1473,8 +1490,20 @@ export default function Home() {
             onClick={() => handleSend("отмена")}
             disabled={isStreaming}
           >
-            Отмена
+            Нет
           </Button>
+          {pending.action === "create_reminder" ? (
+            <Button
+              type="button"
+              size="sm"
+              variant="outline"
+              className="h-7 rounded-lg px-2.5 text-[11px] bg-background/60"
+              onClick={() => inputRef.current?.focus()}
+              disabled={isStreaming}
+            >
+              Изменить
+            </Button>
+          ) : null}
         </div>
       </div>
     );

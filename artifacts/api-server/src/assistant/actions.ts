@@ -96,6 +96,11 @@ type PendingAction =
   | {
       action: "clear_chat";
       conversationId: number;
+    }
+  | {
+      action: "create_reminder";
+      text: string;
+      reminderAt?: string | null;
     };
 
 type ItemRecord = typeof itemsTable.$inferSelect;
@@ -178,6 +183,58 @@ function savedItemFromRecord(item: ItemRecord, folders: FolderRecord[]) {
     folderName: folderNameFor(item, folders),
     reminderAt: item.reminderAt ? item.reminderAt.toISOString() : null,
     content: item.content ?? null,
+  };
+}
+
+async function createReminderItem({
+  userId,
+  text,
+  reminderAt,
+  folder,
+  folders,
+}: {
+  userId: number;
+  text: string;
+  reminderAt: Date;
+  folder: FolderRecord | null;
+  folders: FolderRecord[];
+}): Promise<AssistantActionResponse> {
+  const reminderText = compact(text);
+  if (!reminderText) return baseResponse("unknown_or_ambiguous", "Уточните текст напоминания.");
+
+  const [item] = await db
+    .insert(itemsTable)
+    .values({
+      userId,
+      type: "reminder",
+      title: titleFromText(reminderText, "Новое напоминание"),
+      content: reminderText,
+      folderId: folder?.id ?? null,
+      reminderAt,
+      status: "active",
+      aiTags: [],
+    })
+    .returning();
+
+  const savedItem = savedItemFromRecord(item, folders);
+  const message = `Создал напоминание «${item.title}» на ${formatMoscowDateTime(reminderAt)}.`;
+  return {
+    ...baseResponse("create_reminder", message),
+    type: "reminder",
+    responseMode: "saved",
+    shouldSave: true,
+    title: item.title,
+    cleanedContent: reminderText,
+    reminderAt: reminderAt.toISOString(),
+    savedItem: itemResponse(item, folders),
+    assistantContext: {
+      intentType: "create_reminder",
+      responseMode: "saved",
+      autoSaved: false,
+      assistantReply: message,
+      savedItem,
+      actionResult: { success: true, action: "create_reminder" },
+    },
   };
 }
 
@@ -417,6 +474,29 @@ async function getLatestPendingAction(conversationId: number | null | undefined)
 }
 
 async function executePendingAction(userId: number, action: PendingAction, folders: FolderRecord[]): Promise<AssistantActionResponse> {
+  if (action.action === "create_reminder") {
+    if (!action.reminderAt) {
+      return withPending(
+        "create_reminder",
+        `Укажите дату для напоминания «${action.text}».`,
+        action,
+      );
+    }
+
+    const reminderAt = new Date(action.reminderAt);
+    if (Number.isNaN(reminderAt.getTime())) {
+      return baseResponse("create_reminder", "Не удалось создать напоминание: дата распознана некорректно.");
+    }
+
+    return createReminderItem({
+      userId,
+      text: action.text,
+      reminderAt,
+      folder: null,
+      folders,
+    });
+  }
+
   if (action.action === "delete_item") {
     const [deleted] = await db
       .delete(itemsTable)
@@ -473,6 +553,81 @@ async function executePendingAction(userId: number, action: PendingAction, folde
 
   await db.delete(messages).where(eq(messages.conversationId, action.conversationId));
   return baseResponse("clear_chat", "Готово: история чата очищена. Заметки, файлы, папки и напоминания не тронуты.");
+}
+
+async function continuePendingReminderAction({
+  userId,
+  action,
+  content,
+  folders,
+  folderId,
+}: {
+  userId: number;
+  action: Extract<PendingAction, { action: "create_reminder" }>;
+  content: string;
+  folders: FolderRecord[];
+  folderId?: number | null;
+}): Promise<AssistantActionResponse> {
+  const normalized = normalizeText(content);
+  const folder = folderId ? folders.find((entry) => entry.id === folderId) ?? null : null;
+
+  if (CANCEL_RE.test(normalized)) {
+    return baseResponse("unknown_or_ambiguous", "Ок, создание напоминания отменено.");
+  }
+
+  if (CONFIRM_RE.test(normalized)) {
+    if (!action.reminderAt) {
+      return withPending(
+        "create_reminder",
+        `Укажите дату для напоминания «${action.text}».`,
+        action,
+      );
+    }
+
+    const reminderAt = new Date(action.reminderAt);
+    if (Number.isNaN(reminderAt.getTime())) {
+      return baseResponse("create_reminder", "Не удалось создать напоминание: дата распознана некорректно.");
+    }
+
+    return createReminderItem({ userId, text: action.text, reminderAt, folder, folders });
+  }
+
+  const parsed = parseReminderCommand(content);
+  if (parsed.hasDate && parsed.reminderAt) {
+    const reminderText = parsed.text || action.text;
+    return createReminderItem({ userId, text: reminderText, reminderAt: parsed.reminderAt, folder, folders });
+  }
+
+  if (parsed.hasTime && action.reminderAt) {
+    const baseDate = new Date(action.reminderAt);
+    const timeOnly = parseReminderCommand(`сегодня ${content}`);
+    if (!Number.isNaN(baseDate.getTime()) && timeOnly.reminderAt) {
+      const parts = new Intl.DateTimeFormat("en-CA", {
+        timeZone: "Europe/Moscow",
+        hour: "2-digit",
+        minute: "2-digit",
+        hour12: false,
+      }).formatToParts(timeOnly.reminderAt);
+      const pick = (type: Intl.DateTimeFormatPartTypes) => parts.find((part) => part.type === type)?.value ?? "";
+      const hour = Number(pick("hour"));
+      const minute = Number(pick("minute"));
+      const dateParts = new Intl.DateTimeFormat("en-CA", {
+        timeZone: "Europe/Moscow",
+        year: "numeric",
+        month: "2-digit",
+        day: "2-digit",
+      }).formatToParts(baseDate);
+      const datePick = (type: Intl.DateTimeFormatPartTypes) => dateParts.find((part) => part.type === type)?.value ?? "";
+      const reminderAt = new Date(Date.UTC(Number(datePick("year")), Number(datePick("month")) - 1, Number(datePick("day")), hour - 3, minute));
+      return createReminderItem({ userId, text: action.text, reminderAt, folder, folders });
+    }
+  }
+
+  return withPending(
+    "create_reminder",
+    `Укажите дату для напоминания «${action.text}». Например: 29 июня или завтра в 10:00.`,
+    action,
+  );
 }
 
 function withPending(intent: AssistantActionIntent, message: string, pendingAction: PendingAction): AssistantActionResponse {
@@ -566,45 +721,18 @@ async function executeKeywordCommand({
     if (!text) return baseResponse("unknown_or_ambiguous", "Введите текст напоминания после слова «напоминание».");
 
     const parsed = parseReminderCommand(text);
-    if (!parsed.hasDate) return baseResponse("unknown_or_ambiguous", "Уточните дату и время для напоминания.");
-    if (!parsed.hasTime || !parsed.reminderAt) return baseResponse("unknown_or_ambiguous", "Уточните время напоминания.");
+    if (!parsed.hasDate || !parsed.reminderAt) {
+      const pendingText = parsed.text || text;
+      return withPending(
+        "create_reminder",
+        `Укажите дату для напоминания «${pendingText}».`,
+        { action: "create_reminder", text: pendingText, reminderAt: null },
+      );
+    }
     if (!parsed.text) return baseResponse("unknown_or_ambiguous", "Уточните текст напоминания.");
 
     const reminderText = parsed.text;
-    const [item] = await db
-      .insert(itemsTable)
-      .values({
-        userId,
-        type: "reminder",
-        title: titleFromText(reminderText, "Новое напоминание"),
-        content: reminderText,
-        folderId: folder?.id ?? null,
-        reminderAt: parsed.reminderAt,
-        status: "active",
-        aiTags: [],
-      })
-      .returning();
-
-    const savedItem = savedItemFromRecord(item, folders);
-    const message = `Напоминание создано: ${formatMoscowDateTime(parsed.reminderAt)} — ${reminderText}`;
-    return {
-      ...baseResponse("create_reminder", message),
-      type: "reminder",
-      responseMode: "saved",
-      shouldSave: true,
-      title: item.title,
-      cleanedContent: reminderText,
-      reminderAt: parsed.reminderAt.toISOString(),
-      savedItem: itemResponse(item, folders),
-      assistantContext: {
-        intentType: "create_reminder",
-        responseMode: "saved",
-        autoSaved: false,
-        assistantReply: message,
-        savedItem,
-        actionResult: { success: true, action: "create_reminder" },
-      },
-    };
+    return createReminderItem({ userId, text: reminderText, reminderAt: parsed.reminderAt, folder, folders });
   }
 
   const parsed = parseListCommand(command.text);
@@ -668,6 +796,10 @@ export async function classifyAndExecuteAssistantAction({
   const logBase = { userId, conversationId, contentPreview: content.slice(0, 120) };
 
   const pending = await getLatestPendingAction(conversationId);
+  if (pending?.action === "create_reminder") {
+    logger.info({ ...logBase, intent: pending.action }, "[assistant] continuing pending reminder action");
+    return continuePendingReminderAction({ userId, action: pending, content, folders, folderId });
+  }
   if (pending && CONFIRM_RE.test(normalized)) {
     logger.info({ ...logBase, intent: pending.action }, "[assistant] executing confirmed pending action");
     return executePendingAction(userId, pending, folders);

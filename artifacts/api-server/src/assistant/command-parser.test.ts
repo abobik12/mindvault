@@ -70,7 +70,27 @@ test("lists are parsed without AI and ignore empty items", () => {
   });
 });
 
-test("reminders require a keyword, date, time and text", () => {
+function moscowParts(date: Date) {
+  const parts = new Intl.DateTimeFormat("en-CA", {
+    timeZone: "Europe/Moscow",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: false,
+  }).formatToParts(date);
+  const pick = (type: Intl.DateTimeFormatPartTypes) => parts.find((part) => part.type === type)?.value ?? "";
+  return {
+    year: Number(pick("year")),
+    month: Number(pick("month")),
+    day: Number(pick("day")),
+    hour: Number(pick("hour")),
+    minute: Number(pick("minute")),
+  };
+}
+
+test("reminders parse explicit dates and use default time when time is omitted", () => {
   const haircutCommand = getKeywordCommand("напоминание завтра в 10:00 стрижка");
   assert.equal(haircutCommand?.kind, "reminder");
   const haircut = parseReminderCommand(haircutCommand.text);
@@ -78,6 +98,18 @@ test("reminders require a keyword, date, time and text", () => {
   assert.equal(haircut.hasTime, true);
   assert.equal(haircut.text, "стрижка");
   assert.ok(haircut.reminderAt instanceof Date);
+
+  const birthdayCommand = getKeywordCommand("напоминание 29 июня день рождения у Дани");
+  assert.equal(birthdayCommand?.kind, "reminder");
+  const birthday = parseReminderCommand(birthdayCommand.text);
+  assert.equal(birthday.hasDate, true);
+  assert.equal(birthday.hasTime, false);
+  assert.equal(birthday.text, "день рождения у Дани");
+  assert.ok(birthday.reminderAt instanceof Date);
+  assert.deepEqual(
+    (({ month, day, hour, minute }) => ({ month, day, hour, minute }))(moscowParts(birthday.reminderAt)),
+    { month: 6, day: 29, hour: 9, minute: 0 },
+  );
 
   const noDateCommand = getKeywordCommand("напоминание позвонить преподавателю");
   assert.equal(noDateCommand?.kind, "reminder");
@@ -95,6 +127,7 @@ test("reminders require a keyword, date, time and text", () => {
   assert.equal(noTimeOrText.hasDate, true);
   assert.equal(noTimeOrText.hasTime, false);
   assert.equal(noTimeOrText.text, "");
+  assert.ok(noTimeOrText.reminderAt instanceof Date);
 
   const invalidDateCommand = getKeywordCommand("напоминание 32 января купить хлеб");
   assert.equal(invalidDateCommand?.kind, "reminder");
