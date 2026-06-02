@@ -7,6 +7,7 @@ import Layout from "@/components/layout";
 import AuthPage from "@/pages/auth";
 import Home from "@/pages/home";
 import NotesPage from "@/pages/notes";
+import ListsPage from "@/pages/lists";
 import FilesPage from "@/pages/files";
 import RemindersPage from "@/pages/reminders";
 import SettingsPage from "@/pages/settings";
@@ -36,6 +37,7 @@ function Router() {
       <Route path="/auth" component={AuthPage} />
       <Route path="/" component={() => <ProtectedRoute component={Home} />} />
       <Route path="/notes" component={() => <ProtectedRoute component={NotesPage} />} />
+      <Route path="/lists" component={() => <ProtectedRoute component={ListsPage} />} />
       <Route path="/files" component={() => <ProtectedRoute component={FilesPage} />} />
       <Route path="/reminders" component={() => <ProtectedRoute component={RemindersPage} />} />
       <Route path="/folders/:id" component={() => <ProtectedRoute component={FolderPage} />} />

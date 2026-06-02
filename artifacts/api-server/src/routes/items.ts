@@ -84,7 +84,7 @@ router.get("/items", requireAuth, async (req, res): Promise<void> => {
   }
 
   const conditions = [eq(itemsTable.userId, userId)];
-  if (type) conditions.push(eq(itemsTable.type, type as "note" | "file" | "reminder"));
+  if (type) conditions.push(eq(itemsTable.type, type as "note" | "file" | "reminder" | "list"));
   if (folderId !== undefined && folderId !== null) conditions.push(eq(itemsTable.folderId, folderId));
   if (status) conditions.push(eq(itemsTable.status, status as "active" | "archived" | "completed"));
 
@@ -124,7 +124,7 @@ router.post("/items", requireAuth, async (req, res): Promise<void> => {
 
   const [item] = await db.insert(itemsTable).values({
     userId: req.auth!.userId,
-    type: parsed.data.type as "note" | "file" | "reminder",
+    type: parsed.data.type as "note" | "file" | "reminder" | "list",
     title: parsed.data.title,
     content: parsed.data.content ?? null,
     folderId: parsed.data.folderId ?? null,
@@ -212,12 +212,12 @@ router.patch("/items/:id", requireAuth, async (req, res): Promise<void> => {
   const updates: Record<string, unknown> = {};
   const requestedType = rawBody.type;
   if (requestedType !== undefined) {
-    if (requestedType !== "note" && requestedType !== "file" && requestedType !== "reminder") {
+    if (requestedType !== "note" && requestedType !== "file" && requestedType !== "reminder" && requestedType !== "list") {
       res.status(400).json({ error: "РќРµРєРѕСЂСЂРµРєС‚РЅС‹Р№ С‚РёРї СЌР»РµРјРµРЅС‚Р°" });
       return;
     }
     updates.type = requestedType;
-    if (requestedType === "note" && parsed.data.reminderAt === undefined) {
+    if ((requestedType === "note" || requestedType === "list") && parsed.data.reminderAt === undefined) {
       updates.reminderAt = null;
     }
   }
@@ -304,7 +304,7 @@ router.get("/search", requireAuth, async (req, res): Promise<void> => {
     )!,
   ];
 
-  if (type) conditions.push(eq(itemsTable.type, type as "note" | "file" | "reminder"));
+  if (type) conditions.push(eq(itemsTable.type, type as "note" | "file" | "reminder" | "list"));
   if (folderId !== undefined && folderId !== null) conditions.push(eq(itemsTable.folderId, folderId));
 
   const items = await db.select().from(itemsTable)

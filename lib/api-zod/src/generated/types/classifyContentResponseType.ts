@@ -13,5 +13,6 @@ export const ClassifyContentResponseType = {
   note: "note",
   reminder: "reminder",
   file: "file",
+  list: "list",
   chat: "chat",
 } as const;

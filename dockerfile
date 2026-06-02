@@ -6,4 +6,4 @@ RUN corepack enable && corepack prepare pnpm@latest --activate
 
 COPY . .
 
-RUN pnpm install --no-frozen-lockfile
+RUN npm_config_user_agent=pnpm/docker pnpm install --no-frozen-lockfile

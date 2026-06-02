@@ -4,7 +4,7 @@ import { z } from "zod/v4";
 import { usersTable } from "./users";
 import { foldersTable } from "./folders";
 
-export const itemTypeEnum = pgEnum("item_type", ["note", "file", "reminder"]);
+export const itemTypeEnum = pgEnum("item_type", ["note", "file", "reminder", "list"]);
 export const itemStatusEnum = pgEnum("item_status", ["active", "archived", "completed"]);
 
 export const itemsTable = pgTable("items", {

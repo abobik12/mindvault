@@ -59,7 +59,7 @@ const ACTION_ON_EXISTING_RE =
 const AMBIGUOUS_REMINDER_RE =
   /(завтра|послезавтра|в\s+(понедельник|вторник|среду|четверг|пятницу|субботу|воскресенье)|через\s+\d+)/i;
 
-type IntentType = AssistantActionIntent | "chat_only" | "save_note" | "save_reminder" | "save_file" | "action_on_existing";
+type IntentType = AssistantActionIntent | "chat_only" | "save_note" | "save_reminder" | "save_file" | "create_list" | "action_on_existing";
 type ResponseMode = "reply_only" | "saved" | "suggest_actions" | "action_executed";
 
 type ChatAttachment = {
@@ -74,7 +74,12 @@ type ChatAttachment = {
   createdAt: string;
 };
 
-type AssistantContext = AssistantActionContext | null;
+type AssistantContext =
+  | (Omit<AssistantActionContext, "intentType" | "suggestedActions"> & {
+      intentType: IntentType;
+      suggestedActions?: Array<"save_note" | "save_reminder" | "create_list" | "ignore">;
+    })
+  | null;
 
 function looksLikeFutureReminderIntent(content: string): boolean {
   const normalized = content.toLowerCase();
@@ -109,7 +114,7 @@ function sanitizeAssistantContext(raw: unknown): AssistantContext {
     const rawId = item.id;
     const rawTitle = item.title;
     if (
-      (rawType === "note" || rawType === "file" || rawType === "reminder") &&
+      (rawType === "note" || rawType === "file" || rawType === "reminder" || rawType === "list") &&
       typeof rawId === "number" &&
       typeof rawTitle === "string"
     ) {
@@ -120,6 +125,7 @@ function sanitizeAssistantContext(raw: unknown): AssistantContext {
         folderId: typeof item.folderId === "number" ? item.folderId : null,
         folderName: typeof item.folderName === "string" ? item.folderName.slice(0, 120) : null,
         reminderAt: typeof item.reminderAt === "string" ? item.reminderAt : null,
+        content: typeof item.content === "string" ? item.content.slice(0, 12000) : null,
       };
     }
   }
@@ -127,8 +133,8 @@ function sanitizeAssistantContext(raw: unknown): AssistantContext {
   const rawSuggested = source.suggestedActions;
   const suggestedActions = Array.isArray(rawSuggested)
     ? rawSuggested.filter(
-        (entry): entry is "save_note" | "save_reminder" | "ignore" =>
-          entry === "save_note" || entry === "save_reminder" || entry === "ignore",
+        (entry): entry is "save_note" | "save_reminder" | "create_list" | "ignore" =>
+          entry === "save_note" || entry === "save_reminder" || entry === "create_list" || entry === "ignore",
       )
     : undefined;
 
@@ -174,7 +180,7 @@ async function tryHandleMoveLatestAction({
   content: string;
   userId: number;
   folders: Array<{ id: number; name: string }>;
-}) {
+}): Promise<{ item: typeof itemsTable.$inferSelect; folder: { id: number; name: string } } | null> {
   const lower = content.toLowerCase();
   const asksMove = /(перемест|перенес|перенеси|перемести)/i.test(lower);
   if (!asksMove) return null;
@@ -964,7 +970,7 @@ shouldSave=true только при явном намерении save_note ил
 
   let classification = {
     intentType: "chat_only" as IntentType,
-    type: "chat" as "note" | "reminder" | "file" | "chat",
+    type: "chat" as "note" | "reminder" | "file" | "list" | "chat",
     title: null as string | null,
     summary: null as string | null,
     cleanedContent: null as string | null,
@@ -1000,7 +1006,7 @@ shouldSave=true только при явном намерении save_note ил
         parsedIntentType === "chat_only"
           ? parsedIntentType
           : "chat_only",
-      type: ["note", "reminder", "file", "chat"].includes(parsedJson.type)
+      type: ["note", "reminder", "file", "list", "chat"].includes(parsedJson.type)
         ? parsedJson.type
         : "chat",
       title: typeof parsedJson.title === "string" ? parsedJson.title : null,
@@ -1144,7 +1150,7 @@ shouldSave=true только при явном намерении save_note ил
 
   let savedItem: ReturnType<typeof buildSavedItemResponse> | null = null;
   let assistantSavedItem: NonNullable<AssistantContext>["savedItem"] = null;
-  let suggestedActions: Array<"save_note" | "save_reminder" | "ignore"> = [];
+  let suggestedActions: Array<"save_note" | "save_reminder" | "create_list" | "ignore"> = [];
   let message = "";
 
   if (classification.intentType === "action_on_existing") {
@@ -1155,13 +1161,15 @@ shouldSave=true только при явном намерении save_note ил
     });
 
     if (moveResult) {
+      const movedItem = moveResult!.item;
+      const movedFolder = moveResult!.folder;
       classification.responseMode = "action_executed";
       classification.shouldSave = false;
-      classification.type = moveResult.item.type;
-      const folderName = moveResult.folder.name;
-      savedItem = buildSavedItemResponse(moveResult.item, folderName);
-      assistantSavedItem = buildAssistantSavedItem(moveResult.item, folderName);
-      message = `Готово: объект «${moveResult.item.title}» перемещён в папку «${folderName}».`;
+      classification.type = movedItem.type;
+      const folderName = movedFolder.name;
+      savedItem = buildSavedItemResponse(movedItem, folderName);
+      assistantSavedItem = buildAssistantSavedItem(movedItem, folderName);
+      message = `Готово: объект «${movedItem.title}» перемещён в папку «${folderName}».`;
     } else {
       classification.intentType = "chat_only";
       classification.type = "chat";
@@ -1173,11 +1181,12 @@ shouldSave=true только при явном намерении save_note ил
   } else if (classification.shouldSave && (classification.type === "note" || classification.type === "reminder")) {
     let folderId: number | null = contextualFolderId;
 
-    if (!folderId && classification.suggestedFolder) {
+    const suggestedFolderName = classification.suggestedFolder;
+    if (!folderId && suggestedFolderName) {
       const matchedFolder = userFolders.find(
-        (folder) => folder.name.toLowerCase() === classification.suggestedFolder!.toLowerCase(),
+        (folder) => folder.name.toLowerCase() === suggestedFolderName!.toLowerCase(),
       );
-      if (matchedFolder) folderId = matchedFolder.id;
+      if (matchedFolder !== undefined) folderId = matchedFolder!.id;
     }
 
     if (!folderId) {
@@ -1190,12 +1199,12 @@ shouldSave=true только при явном намерении save_note ил
         folderCandidates.some((candidate) => candidate.toLowerCase() === folder.name.toLowerCase()),
       );
 
-      if (defaultFolder) folderId = defaultFolder.id;
+      if (defaultFolder !== undefined) folderId = defaultFolder!.id;
     }
 
     let parsedReminderDate: Date | null = null;
     try {
-      parsedReminderDate = parseReminderDateTime(classification.reminderAt);
+      parsedReminderDate = classification.reminderAt ? parseReminderDateTime(classification.reminderAt) : null;
     } catch (err) {
       logger.warn({ err }, "Не удалось распознать дату напоминания, сохраняем без времени");
       classification.reminderAt = null;
@@ -1219,12 +1228,12 @@ shouldSave=true только при явном намерении save_note ил
       .returning();
 
     classification.intentType = savedRecord.type === "reminder" ? "save_reminder" : "save_note";
-    classification.type = savedRecord.type;
+    classification.type = savedRecord.type === "reminder" ? "reminder" : "note";
     classification.responseMode = "saved";
     classification.shouldSave = true;
 
-    if (parsedReminderDate) {
-      classification.reminderAt = parsedReminderDate.toISOString();
+    if (parsedReminderDate !== null) {
+      classification.reminderAt = parsedReminderDate!.toISOString();
     }
 
     let folderName: string | null = null;
@@ -1237,7 +1246,7 @@ shouldSave=true только при явном намерении save_note ил
     assistantSavedItem = buildAssistantSavedItem(savedRecord, folderName);
 
     if (savedRecord.type === "reminder") {
-      const reminderPart = parsedReminderDate ? ` на ${formatMoscowDateTime(parsedReminderDate)}` : "";
+      const reminderPart = parsedReminderDate !== null ? ` на ${formatMoscowDateTime(parsedReminderDate!)}` : "";
       message = `Сохранил как напоминание «${savedRecord.title}»${folderName ? ` в папку «${folderName}»` : ""}${reminderPart}.`;
     } else {
       message = `Сохранил как заметку «${savedRecord.title}»${folderName ? ` в папку «${folderName}»` : ""}.`;

@@ -37,6 +37,8 @@ import {
   Trash2,
   FolderOpen,
   ArrowDown,
+  CheckSquare,
+  Plus,
   MoreHorizontal,
   Copy,
   Save,
@@ -59,8 +61,10 @@ type IntentType =
   | "search_user_content"
   | "answer_about_user_content"
   | "create_note"
+  | "create_list"
   | "update_note"
   | "delete_note"
+  | "delete_list"
   | "create_reminder"
   | "update_reminder"
   | "delete_reminder"
@@ -75,9 +79,9 @@ type IntentType =
   | "clear_chat"
   | "unknown_or_ambiguous";
 type ResponseMode = "reply_only" | "saved" | "suggest_actions" | "action_executed";
-type ItemType = "note" | "file" | "reminder";
-type SuggestedAction = "save_note" | "save_reminder" | "ignore";
-type SourceType = "note" | "file" | "reminder" | "folder" | "message";
+type ItemType = "note" | "file" | "reminder" | "list";
+type SuggestedAction = "save_note" | "save_reminder" | "create_list" | "ignore";
+type SourceType = "note" | "file" | "reminder" | "list" | "folder" | "message";
 
 type AssistantSavedItem = {
   id: number;
@@ -86,6 +90,13 @@ type AssistantSavedItem = {
   folderId: number | null;
   folderName: string | null;
   reminderAt?: string | null;
+  content?: string | null;
+};
+
+type TodoListEntry = {
+  id: string;
+  text: string;
+  done: boolean;
 };
 
 type AssistantMessageContext = {
@@ -154,7 +165,7 @@ type ActionResult = {
 const MAX_CHAT_ATTACHMENT_SIZE = 20 * 1024 * 1024;
 
 function getSectionPathByItemType(type: ItemType): string {
-  if (type === "note") return "/notes";
+  if (type === "note" || type === "list") return "/notes";
   if (type === "reminder") return "/reminders";
   return "/files";
 }
@@ -163,6 +174,64 @@ function buildTitleFromText(text: string, fallback: string): string {
   const normalized = text.replace(/\s+/g, " ").trim();
   if (!normalized) return fallback;
   return normalized.length > 80 ? `${normalized.slice(0, 77)}...` : normalized;
+}
+
+function parseTodoListDraft(text: string): { title: string; items: string[] } | null {
+  const source = text.replace(/\s+/g, " ").trim();
+  if (!source) return null;
+
+  const colonIndex = source.search(/[:：]/);
+  let title = "Список";
+  let itemsSource = source;
+
+  if (colonIndex > 0) {
+    title = buildTitleFromText(source.slice(0, colonIndex), "Список");
+    itemsSource = source.slice(colonIndex + 1);
+  } else if (/^купить\b/i.test(source)) {
+    title = "Покупки";
+    itemsSource = source.replace(/^купить\b/i, "");
+  }
+
+  const items = itemsSource
+    .split(/[\n;,]+/g)
+    .map((entry) => entry.replace(/^[-*•\d.)\s]+/, "").replace(/\s+/g, " ").trim())
+    .filter(Boolean);
+
+  if (items.length === 0) return null;
+  return { title, items };
+}
+
+function createTodoListContent(items: string[]): string {
+  return JSON.stringify({
+    kind: "todo-list",
+    items: items.map((text, index) => ({
+      id: `item-${Date.now()}-${index}`,
+      text,
+      done: false,
+    })),
+  });
+}
+
+function readTodoListItems(content?: string | null): TodoListEntry[] {
+  if (!content) return [];
+  try {
+    const parsed = JSON.parse(content) as { kind?: string; items?: unknown };
+    if (parsed.kind !== "todo-list" || !Array.isArray(parsed.items)) return [];
+    return parsed.items
+      .map((entry, index) => {
+        if (!entry || typeof entry !== "object") return null;
+        const source = entry as Record<string, unknown>;
+        if (typeof source.text !== "string" || !source.text.trim()) return null;
+        return {
+          id: typeof source.id === "string" ? source.id : `item-${index}`,
+          text: source.text,
+          done: source.done === true,
+        };
+      })
+      .filter((entry): entry is TodoListEntry => Boolean(entry));
+  } catch {
+    return [];
+  }
 }
 
 function toFolderIdFromContext(folderContext: string): number | null {
@@ -232,7 +301,7 @@ function readAssistantContext(raw: unknown): AssistantMessageContext | null {
     const item = rawSavedItem as Record<string, unknown>;
     if (
       typeof item.id === "number" &&
-      (item.type === "note" || item.type === "file" || item.type === "reminder") &&
+      (item.type === "note" || item.type === "file" || item.type === "reminder" || item.type === "list") &&
       typeof item.title === "string"
     ) {
       savedItem = {
@@ -242,6 +311,7 @@ function readAssistantContext(raw: unknown): AssistantMessageContext | null {
         folderId: typeof item.folderId === "number" ? item.folderId : null,
         folderName: typeof item.folderName === "string" ? item.folderName : null,
         reminderAt: typeof item.reminderAt === "string" ? item.reminderAt : null,
+        content: typeof item.content === "string" ? item.content : null,
       };
     }
   }
@@ -249,7 +319,7 @@ function readAssistantContext(raw: unknown): AssistantMessageContext | null {
   const suggestedActions = Array.isArray(source.suggestedActions)
     ? source.suggestedActions.filter(
         (entry): entry is SuggestedAction =>
-          entry === "save_note" || entry === "save_reminder" || entry === "ignore",
+          entry === "save_note" || entry === "save_reminder" || entry === "create_list" || entry === "ignore",
       )
     : undefined;
 
@@ -260,7 +330,7 @@ function readAssistantContext(raw: unknown): AssistantMessageContext | null {
     if (
       action.action === "delete_item" &&
       typeof action.itemId === "number" &&
-      (action.itemType === "note" || action.itemType === "file" || action.itemType === "reminder") &&
+      (action.itemType === "note" || action.itemType === "file" || action.itemType === "reminder" || action.itemType === "list") &&
       typeof action.title === "string"
     ) {
       pendingAction = {
@@ -346,6 +416,7 @@ function readMessageSources(raw: unknown): MessageSource[] {
         (source.type !== "note" &&
           source.type !== "file" &&
           source.type !== "reminder" &&
+          source.type !== "list" &&
           source.type !== "folder" &&
           source.type !== "message")
       ) {
@@ -412,6 +483,7 @@ export default function Home() {
 
   const [isConvertingType, setIsConvertingType] = useState(false);
   const [isSavingSuggested, setIsSavingSuggested] = useState(false);
+  const [processingSuggestedMessageIds, setProcessingSuggestedMessageIds] = useState<Set<number>>(() => new Set());
   const [isNearBottom, setIsNearBottom] = useState(true);
   const [selectedFiles, setSelectedFiles] = useState<File[]>([]);
   const [pendingFileAttachments, setPendingFileAttachments] = useState<ChatAttachment[]>([]);
@@ -421,6 +493,7 @@ export default function Home() {
   const messagesContainerRef = useRef<HTMLDivElement>(null);
   const composerAreaRef = useRef<HTMLDivElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const inputRef = useRef<HTMLTextAreaElement>(null);
   const [composerHeight, setComposerHeight] = useState(160);
 
   const { data: folders = [] } = useListFolders();
@@ -769,6 +842,50 @@ export default function Home() {
     }
   };
 
+  const patchSavedItemContent = (messageId: number, content: string | null) => {
+    patchMessageContext(messageId, (context) => {
+      if (!context?.savedItem) return context;
+      return {
+        ...context,
+        savedItem: {
+          ...context.savedItem,
+          content,
+        },
+      };
+    });
+  };
+
+  const handleToggleListItem = async (messageId: number, item: AssistantSavedItem, entryId: string) => {
+    const entries = readTodoListItems(item.content);
+    const nextEntries = entries.map((entry) => (entry.id === entryId ? { ...entry, done: !entry.done } : entry));
+    const nextContent = JSON.stringify({ kind: "todo-list", items: nextEntries });
+
+    try {
+      await updateItem.mutateAsync({ id: item.id, data: { content: nextContent } });
+      patchSavedItemContent(messageId, nextContent);
+    } catch {
+      toast.error("Не удалось обновить пункт списка");
+    }
+  };
+
+  const handleAddListItem = async (messageId: number, item: AssistantSavedItem) => {
+    const text = window.prompt("Новый пункт списка");
+    const normalized = text?.trim();
+    if (!normalized) return;
+
+    const entries = readTodoListItems(item.content);
+    const nextEntries = [...entries, { id: `item-${Date.now()}`, text: normalized, done: false }];
+    const nextContent = JSON.stringify({ kind: "todo-list", items: nextEntries });
+
+    try {
+      await updateItem.mutateAsync({ id: item.id, data: { content: nextContent } });
+      patchSavedItemContent(messageId, nextContent);
+      toast.success("Пункт добавлен");
+    } catch {
+      toast.error("Не удалось добавить пункт");
+    }
+  };
+
   const handleConvertItemType = async (messageId: number, item: AssistantSavedItem, targetType: ItemType) => {
     if (item.type === targetType) return;
 
@@ -832,6 +949,16 @@ export default function Home() {
     action: SuggestedAction,
     sourceUserContent: string,
   ) => {
+    if (processingSuggestedMessageIds.has(messageId)) return;
+    setProcessingSuggestedMessageIds((current) => new Set(current).add(messageId));
+    const clearSuggestedProcessing = () => {
+      setProcessingSuggestedMessageIds((current) => {
+        const next = new Set(current);
+        next.delete(messageId);
+        return next;
+      });
+    };
+
     if (action === "ignore") {
       patchMessageContext(messageId, (context) => {
         if (!context) return context;
@@ -842,26 +969,53 @@ export default function Home() {
         };
       });
       toast.success("Сообщение оставлено как обычный чат");
+      clearSuggestedProcessing();
       return;
     }
 
     const contentToSave = sourceUserContent.trim();
     if (!contentToSave) {
       toast.error("Не удалось определить, что именно сохранить");
+      clearSuggestedProcessing();
+      return;
+    }
+
+    if (action === "save_reminder") {
+      patchMessageContext(messageId, (context) => {
+        if (!context) return context;
+        return {
+          ...context,
+          responseMode: "reply_only",
+          suggestedActions: [],
+        };
+      });
+      try {
+        await handleSend(`напоминание ${contentToSave}`);
+      } finally {
+        clearSuggestedProcessing();
+      }
       return;
     }
 
     setIsSavingSuggested(true);
     try {
       const folderId = toFolderIdFromContext(saveFolderContext);
+      const parsedList = action === "create_list" ? parseTodoListDraft(contentToSave) : null;
+      if (action === "create_list" && !parsedList) {
+        toast.error("Не удалось разобрать пункты списка");
+        return;
+      }
+
       const created = await createItem.mutateAsync({
         data: {
-          type: action === "save_note" ? "note" : "reminder",
+          type: action === "save_note" ? "note" : action === "create_list" ? "list" : "reminder",
           title:
             action === "save_note"
               ? buildTitleFromText(contentToSave, "Новая заметка")
-              : buildTitleFromText(contentToSave, "Новое напоминание"),
-          content: contentToSave,
+              : action === "create_list" && parsedList
+                ? parsedList.title
+                : buildTitleFromText(contentToSave, "Новое напоминание"),
+          content: action === "create_list" && parsedList ? createTodoListContent(parsedList.items) : contentToSave,
           folderId,
         },
       });
@@ -879,14 +1033,16 @@ export default function Home() {
           folderId: created.folderId ?? null,
           folderName: created.folderName ?? null,
           reminderAt: created.reminderAt ?? null,
+          content: created.content ?? null,
         },
       }));
 
-      toast.success(action === "save_note" ? "Сохранено как заметка" : "Создано напоминание");
+      toast.success(action === "save_note" ? "Сохранено как заметка" : action === "create_list" ? "Создан список" : "Создано напоминание");
     } catch {
       toast.error("Не удалось сохранить объект");
     } finally {
       setIsSavingSuggested(false);
+      clearSuggestedProcessing();
     }
   };
 
@@ -1086,6 +1242,8 @@ export default function Home() {
           toast.success(`Создано напоминание: «${classification.savedItem.title}»`);
         } else if (savedType === "note") {
           toast.success(`Сохранена заметка: «${classification.savedItem.title}»`);
+        } else if (savedType === "list") {
+          toast.success(`Создан список: «${classification.savedItem.title}»`);
         }
         queryClient.invalidateQueries({ queryKey: getListItemsQueryKey() });
         queryClient.invalidateQueries({ queryKey: getListFoldersQueryKey() });
@@ -1179,6 +1337,16 @@ export default function Home() {
     }
   };
 
+  const insertCommandPrefix = (prefix: "заметка " | "напоминание " | "список ") => {
+    setInput((current) => {
+      const trimmed = current.trimStart();
+      if (!trimmed) return prefix;
+      if (/^(заметка|напоминание|список)\b/i.test(trimmed)) return current;
+      return `${prefix}${current}`;
+    });
+    window.requestAnimationFrame(() => inputRef.current?.focus());
+  };
+
   const handleFileUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
     const files = Array.from(e.target.files ?? []);
     if (files.length === 0) return;
@@ -1224,12 +1392,14 @@ export default function Home() {
     if (type === "note") return "Заметка";
     if (type === "file") return "Файл";
     if (type === "reminder") return "Напоминание";
+    if (type === "list") return "Список";
     if (type === "folder") return "Папка";
     return "Чат";
   };
 
   const handleOpenSource = (source: MessageSource) => {
     if (source.type === "note") setLocation("/notes");
+    if (source.type === "list") setLocation("/notes");
     if (source.type === "file") setLocation("/files");
     if (source.type === "reminder") setLocation("/reminders");
     if (source.type === "folder" && source.id) setLocation(`/folders/${source.id}`);
@@ -1275,7 +1445,7 @@ export default function Home() {
         ? "Очистить историю чата?"
         : pending.action === "delete_folder"
           ? `Удалить папку «${pending.title}»?`
-          : `Удалить ${pending.itemType === "file" ? "файл" : pending.itemType === "reminder" ? "напоминание" : "заметку"} «${pending.title}»?`;
+          : `Удалить ${pending.itemType === "file" ? "файл" : pending.itemType === "reminder" ? "напоминание" : pending.itemType === "list" ? "список" : "заметку"} «${pending.title}»?`;
     const hint =
       pending.action === "clear_chat"
         ? "Заметки, файлы, папки и напоминания не будут удалены."
@@ -1306,6 +1476,49 @@ export default function Home() {
             Отмена
           </Button>
         </div>
+      </div>
+    );
+  };
+
+  const renderTodoListCard = (messageId: number, item: AssistantSavedItem | null) => {
+    if (!item || item.type !== "list") return null;
+    const entries = readTodoListItems(item.content);
+
+    return (
+      <div className="mt-2 w-full max-w-xl rounded-xl border border-border/50 bg-background/80 px-3 py-2 text-xs shadow-sm">
+        <div className="mb-2 flex items-center gap-2 font-medium text-foreground">
+          <CheckSquare className="h-4 w-4 text-primary" />
+          {item.title}
+        </div>
+        {entries.length > 0 ? (
+          <div className="space-y-1.5">
+            {entries.map((entry) => (
+              <label key={entry.id} className="flex cursor-pointer items-start gap-2 rounded-lg px-1 py-0.5 hover:bg-accent/40">
+                <input
+                  type="checkbox"
+                  className="mt-0.5 h-3.5 w-3.5 rounded border-border"
+                  checked={entry.done}
+                  disabled={updateItem.isPending}
+                  onChange={() => handleToggleListItem(messageId, item, entry.id)}
+                />
+                <span className={cn("min-w-0 break-words", entry.done && "text-muted-foreground line-through")}>{entry.text}</span>
+              </label>
+            ))}
+          </div>
+        ) : (
+          <div className="text-muted-foreground">Пункты списка пока пустые.</div>
+        )}
+        <Button
+          type="button"
+          variant="ghost"
+          size="sm"
+          className="mt-2 h-7 rounded-lg px-2 text-[11px]"
+          disabled={updateItem.isPending}
+          onClick={() => handleAddListItem(messageId, item)}
+        >
+          <Plus className="mr-1 h-3 w-3" />
+          Добавить пункт
+        </Button>
       </div>
     );
   };
@@ -1349,7 +1562,11 @@ export default function Home() {
 
     const sourceUserContent = getPreviousUserMessage(conversationMessages, index);
     const actionsDisabled =
-      updateItem.isPending || deleteItem.isPending || isConvertingType || isSavingSuggested;
+      updateItem.isPending ||
+      deleteItem.isPending ||
+      isConvertingType ||
+      isSavingSuggested ||
+      processingSuggestedMessageIds.has(message.id);
 
     return (
       <div className="mt-2 flex flex-wrap gap-1.5 px-1">
@@ -1465,6 +1682,18 @@ export default function Home() {
               </Button>
             ) : null}
 
+            {context.suggestedActions?.includes("create_list") ? (
+              <Button
+                variant="outline"
+                size="sm"
+                className="h-7 rounded-lg px-2.5 text-[11px]"
+                onClick={() => handleSuggestedAction(message.id, "create_list", sourceUserContent)}
+                disabled={actionsDisabled}
+              >
+                Создать список
+              </Button>
+            ) : null}
+
             {context.suggestedActions?.includes("ignore") ? (
               <Button
                 variant="outline"
@@ -1501,6 +1730,21 @@ export default function Home() {
                 className="max-w-5xl mx-auto space-y-5 sm:space-y-6"
                 style={{ paddingBottom: `${composerHeight + 24}px` }}
               >
+                {conversationMessages.length === 0 ? (
+                  <div className="mx-auto max-w-2xl rounded-2xl border border-border/50 bg-card/80 px-4 py-3 text-sm text-muted-foreground shadow-sm">
+                    <p className="text-foreground">Пишите обычный вопрос — ассистент просто ответит.</p>
+                    <p className="mt-1">
+                      Чтобы сохранить информацию, начните сообщение со слова: <span className="font-medium text-foreground">заметка</span>,{" "}
+                      <span className="font-medium text-foreground">напоминание</span> или{" "}
+                      <span className="font-medium text-foreground">список</span>.
+                    </p>
+                    <div className="mt-2 grid gap-1 text-xs sm:grid-cols-3">
+                      <span>заметка изучить Java</span>
+                      <span>напоминание завтра в 10:00 стрижка</span>
+                      <span>список купить хлеб, молоко, яйца</span>
+                    </div>
+                  </div>
+                ) : null}
                 {conversationMessages.map((msg, i) => (
                   <div key={msg.id || i} className={cn("flex gap-3 sm:gap-4", msg.role === "user" ? "flex-row-reverse" : "")}> 
                     <div
@@ -1527,6 +1771,7 @@ export default function Home() {
                       {renderAttachmentCards(readMessageAttachments(msg.metadata))}
                       {msg.role === "assistant" ? renderSourceCards(readMessageSources(msg.metadata)) : null}
                       {msg.role === "assistant" ? renderPendingActionCard(readAssistantContext(msg.metadata)) : null}
+                      {msg.role === "assistant" ? renderTodoListCard(msg.id, readAssistantContext(msg.metadata)?.savedItem ?? null) : null}
                       <span className="text-[10px] text-muted-foreground mt-1 px-1">
                         {msg.createdAt ? formatMoscowTime(msg.createdAt) : "Сейчас"}
                       </span>
@@ -1639,6 +1884,38 @@ export default function Home() {
                   ))}
                 </div>
               ) : null}
+              <div className="mx-auto mb-2 flex max-w-5xl flex-wrap items-center gap-1.5 pointer-events-auto">
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  className="h-7 rounded-full bg-card/90 px-2.5 text-[11px]"
+                  onClick={() => insertCommandPrefix("заметка ")}
+                  disabled={isStreaming}
+                >
+                  Заметка
+                </Button>
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  className="h-7 rounded-full bg-card/90 px-2.5 text-[11px]"
+                  onClick={() => insertCommandPrefix("напоминание ")}
+                  disabled={isStreaming}
+                >
+                  Напоминание
+                </Button>
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  className="h-7 rounded-full bg-card/90 px-2.5 text-[11px]"
+                  onClick={() => insertCommandPrefix("список ")}
+                  disabled={isStreaming}
+                >
+                  Список
+                </Button>
+              </div>
               <div className="max-w-5xl mx-auto relative flex flex-wrap sm:flex-nowrap items-end gap-2 bg-card rounded-2xl border border-border/50 shadow-lg p-2 focus-within:ring-1 focus-within:ring-primary/50 transition-all pointer-events-auto">
                 <input type="file" className="hidden" ref={fileInputRef} onChange={handleFileUpload} multiple />
                 <Button
@@ -1691,10 +1968,11 @@ export default function Home() {
                 </Select>
 
                 <Textarea
+                  ref={inputRef}
                   value={input}
                   onChange={(e) => setInput(e.target.value)}
                   onKeyDown={handleKeyDown}
-                  placeholder="Напишите сообщение или команду для сохранения..."
+                  placeholder="Обычный вопрос или: заметка / напоминание / список..."
                   className="min-h-[44px] max-h-[32dvh] min-w-0 flex-1 resize-none border-0 focus-visible:ring-0 shadow-none bg-transparent p-3 text-sm"
                   rows={1}
                   disabled={isStreaming}
@@ -1711,7 +1989,7 @@ export default function Home() {
               </div>
               <div className="max-w-5xl mx-auto mt-2 text-center pointer-events-auto">
                 <span className="text-[10px] text-muted-foreground">
-                  Shift+Enter — новая строка. Обычные сообщения не сохраняются автоматически.
+                  Пишите обычный вопрос — ассистент ответит. Для сохранения начните с: заметка, напоминание или список.
                 </span>
               </div>
             </div>

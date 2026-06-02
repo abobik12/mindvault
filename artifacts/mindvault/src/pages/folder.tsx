@@ -31,6 +31,7 @@ import {
   Folder as FolderIcon,
   FileText,
   HardDrive,
+  ListChecks,
   Clock,
   Loader2,
   Plus,
@@ -63,9 +64,10 @@ function getFileTypeSuffix(mimeType: string | null): string {
   return (mimeType.split("/")[1] || "FILE").toUpperCase();
 }
 
-function getTypeMeta(type: "note" | "file" | "reminder") {
+function getTypeMeta(type: "note" | "file" | "reminder" | "list") {
   if (type === "note") return { label: "Заметка", icon: FileText };
   if (type === "file") return { label: "Файл", icon: HardDrive };
+  if (type === "list") return { label: "Список", icon: ListChecks };
   return { label: "Напоминание", icon: Clock };
 }
 

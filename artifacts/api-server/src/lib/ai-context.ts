@@ -3,8 +3,8 @@ import { conversations, db, foldersTable, itemsTable, messages, type Item } from
 import { logger } from "./logger";
 import { canAttemptTextExtraction, extractTextFromUpload } from "./file-extraction";
 
-type SourceType = "folder" | "note" | "file" | "reminder" | "message";
-type QueryIntent = "notes" | "files" | "folders" | "reminders" | "saved" | "topic" | "general";
+type SourceType = "folder" | "note" | "file" | "reminder" | "list" | "message";
+type QueryIntent = "notes" | "files" | "folders" | "reminders" | "lists" | "saved" | "topic" | "general";
 
 export interface UserContextData {
   overview: {
@@ -12,6 +12,7 @@ export interface UserContextData {
     noteCount: number;
     fileCount: number;
     reminderCount: number;
+    listCount: number;
   };
   folders: Array<{
     id: number;
@@ -21,13 +22,14 @@ export interface UserContextData {
   recentNotes: Array<ContextItem>;
   recentFiles: Array<ContextItem & { filename: string; mimeType: string; size: string }>;
   upcomingReminders: Array<ContextItem & { dueDate: string; status: string }>;
+  recentLists: Array<ContextItem>;
   relevantSources: Array<RelevantSource>;
   queryIntent: QueryIntent;
-  requestedTypes: Array<"note" | "file" | "reminder" | "folder">;
+  requestedTypes: Array<"note" | "file" | "reminder" | "list" | "folder">;
 }
 
 interface ContextItem {
-  type: Extract<SourceType, "note" | "file" | "reminder">;
+  type: Extract<SourceType, "note" | "file" | "reminder" | "list">;
   title: string;
   folder: string;
   date: string;
@@ -76,12 +78,13 @@ const SEARCH_STOP_WORDS = new Set([
 ]);
 
 const SAVED_DATA_QUERY_RE =
-  /(сохранял|сохраненн|заметк|файл|папк|напомин|найди|покажи|перескажи|что у меня|какие у меня|в моих|из моих|mindvault|баз[аеы] знаний)/i;
+  /(сохранял|сохраненн|заметк|файл|папк|напомин|список|списки|чеклист|todo|to-do|найди|покажи|перескажи|что у меня|какие у меня|в моих|из моих|mindvault|баз[аеы] знаний)/i;
 
 const NOTE_QUERY_RE = /(заметк|запис|мысл)/i;
 const FILE_QUERY_RE = /(файл|документ|загруз|вложен)/i;
 const FOLDER_QUERY_RE = /(папк|раздел|каталог)/i;
 const REMINDER_QUERY_RE = /(напомин|задач|срок|дедлайн|дел[ао])/i;
+const LIST_QUERY_RE = /(список|списки|чеклист|todo|to-do)/i;
 const SAVED_OVERVIEW_QUERY_RE = /(что\s+я\s+сохранял|что\s+сохранено|покажи\s+сохран|какие\s+у\s+меня|что\s+у\s+меня)/i;
 
 function normalizeText(value: string): string {
@@ -109,13 +112,14 @@ function getSearchTerms(query: string): string[] {
   ).slice(0, 16);
 }
 
-function getRequestedTypes(query: string): Array<"note" | "file" | "reminder" | "folder"> {
+function getRequestedTypes(query: string): Array<"note" | "file" | "reminder" | "list" | "folder"> {
   const normalized = normalizeText(query);
-  const types: Array<"note" | "file" | "reminder" | "folder"> = [];
+  const types: Array<"note" | "file" | "reminder" | "list" | "folder"> = [];
   if (NOTE_QUERY_RE.test(normalized)) types.push("note");
   if (FILE_QUERY_RE.test(normalized)) types.push("file");
   if (FOLDER_QUERY_RE.test(normalized)) types.push("folder");
   if (REMINDER_QUERY_RE.test(normalized)) types.push("reminder");
+  if (LIST_QUERY_RE.test(normalized)) types.push("list");
   return types;
 }
 
@@ -127,6 +131,7 @@ function detectQueryIntent(query: string): QueryIntent {
   if (requestedTypes[0] === "file") return "files";
   if (requestedTypes[0] === "folder") return "folders";
   if (requestedTypes[0] === "reminder") return "reminders";
+  if (requestedTypes[0] === "list") return "lists";
   if (SAVED_OVERVIEW_QUERY_RE.test(normalized) || SAVED_DATA_QUERY_RE.test(normalized)) return "saved";
   return getSearchTerms(query).length > 0 ? "topic" : "general";
 }
@@ -285,7 +290,9 @@ async function backfillExtractedTextForRelevantFiles({
 
   for (const { item } of candidates) {
     const filename = item.originalFilename ?? item.title;
-    const extraction = await extractTextFromUpload(filename, item.mimeType ?? "application/octet-stream", item.fileData);
+    const fileData = item.fileData;
+    if (!fileData) continue;
+    const extraction = await extractTextFromUpload(filename, item.mimeType ?? "application/octet-stream", fileData);
 
     await db
       .update(itemsTable)
@@ -374,6 +381,7 @@ export async function buildAssistantContext(
     const notes = allItems.filter((item) => item.type === "note");
     const files = allItems.filter((item) => item.type === "file");
     const reminders = allItems.filter((item) => item.type === "reminder");
+    const lists = allItems.filter((item) => item.type === "list");
     const terms = getSearchTerms(currentMessage);
 
     await backfillExtractedTextForRelevantFiles({
@@ -416,6 +424,14 @@ export async function buildAssistantContext(
         date: formatDate(item.updatedAt),
         excerpt: extractTextPreview(item, 220),
       }));
+
+    const recentLists = lists.slice(0, maxRecentItems).map((item) => ({
+      type: "list" as const,
+      title: item.title,
+      excerpt: extractTextPreview(item, 320),
+      folder: folderMap.get(item.folderId ?? 0) ?? "Без папки",
+      date: formatDate(item.updatedAt),
+    }));
 
     const conversationRows = await db
       .select({ id: conversations.id })
@@ -464,7 +480,8 @@ export async function buildAssistantContext(
         requestedTypes.includes(item.type) ||
         (queryIntent === "notes" && item.type === "note") ||
         (queryIntent === "files" && item.type === "file") ||
-        (queryIntent === "reminders" && item.type === "reminder");
+        (queryIntent === "reminders" && item.type === "reminder") ||
+        (queryIntent === "lists" && item.type === "list");
 
       if (score > 0 || shouldIncludeByIntent) {
         relevantSources.push(sourceFromItem(item, folder, score || (shouldIncludeByIntent ? 75 : 0)));
@@ -517,6 +534,7 @@ export async function buildAssistantContext(
         fileCount: files.length,
         folderCount: folders.length,
         reminderCount: reminders.length,
+        listCount: lists.length,
         relevantCount: uniqueRelevantSources.length,
         sourceTitles: uniqueRelevantSources.map((source) => source.title).slice(0, 20),
       },
@@ -529,11 +547,13 @@ export async function buildAssistantContext(
         noteCount: notes.length,
         fileCount: files.length,
         reminderCount: reminders.length,
+        listCount: lists.length,
       },
       folders: userFolders,
       recentNotes,
       recentFiles,
       upcomingReminders,
+      recentLists,
       relevantSources: uniqueRelevantSources,
       queryIntent,
       requestedTypes,
@@ -541,11 +561,12 @@ export async function buildAssistantContext(
   } catch (err) {
     logger.error({ err }, "Failed to build assistant context");
     return {
-      overview: { folderCount: 0, noteCount: 0, fileCount: 0, reminderCount: 0 },
+      overview: { folderCount: 0, noteCount: 0, fileCount: 0, reminderCount: 0, listCount: 0 },
       folders: [],
       recentNotes: [],
       recentFiles: [],
       upcomingReminders: [],
+      recentLists: [],
       relevantSources: [],
       queryIntent: "general",
       requestedTypes: [],
@@ -563,6 +584,7 @@ export function formatContextForPrompt(context: UserContextData, includeEverythi
       `- Notes: ${context.overview.noteCount}`,
       `- Files: ${context.overview.fileCount}`,
       `- Reminders: ${context.overview.reminderCount}`,
+      `- Lists: ${context.overview.listCount}`,
     ].join("\n"),
   );
 
@@ -622,20 +644,29 @@ export function formatContextForPrompt(context: UserContextData, includeEverythi
         ].join("\n"),
       );
     }
+
+    if (context.recentLists.length > 0) {
+      sections.push(
+        [
+          "Recent lists:",
+          ...context.recentLists.map((list) => `- ${list.title} (${list.folder}, ${list.date}): ${list.excerpt}`),
+        ].join("\n"),
+      );
+    }
   }
 
   const asksAboutSavedData = SAVED_DATA_QUERY_RE.toString();
   const hasAnySavedData =
-    context.overview.folderCount + context.overview.noteCount + context.overview.fileCount + context.overview.reminderCount > 0;
+    context.overview.folderCount + context.overview.noteCount + context.overview.fileCount + context.overview.reminderCount + context.overview.listCount > 0;
 
   return (
     "\n\n---\n" +
     "MindVault private user context. This data belongs only to the current authenticated user.\n" +
     "Use it when it is relevant to the user's question. Do not expose raw JSON or database details.\n" +
-    "When you rely on saved notes, files, folders, reminders, or old chat messages, briefly name the source titles.\n" +
+    "When you rely on saved notes, files, folders, lists, reminders, or old chat messages, briefly name the source titles.\n" +
     `Detected user-content query intent: ${context.queryIntent}. Saved data exists: ${hasAnySavedData ? "yes" : "no"}.\n` +
     `Requested content types: ${context.requestedTypes.length > 0 ? context.requestedTypes.join(", ") : "not explicit"}.\n` +
-    "If the user asks to list notes, files, folders, or reminders, answer from the matching sections even when keyword relevance is broad.\n" +
+    "If the user asks to list notes, files, folders, lists, or reminders, answer from the matching sections even when keyword relevance is broad.\n" +
     "Say in Russian \"В сохраненных данных я не нашел ничего похожего.\" only when the user asks about saved data and no matching sources, recent items, or folders are present.\n" +
     `Saved-data query detector used by the app: ${asksAboutSavedData}\n\n` +
     sections.join("\n\n") +

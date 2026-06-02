@@ -11,6 +11,7 @@ import {
   Loader2,
   LogOut,
   Clock,
+  ListChecks,
   MoreHorizontal,
   Pencil,
   Trash2,
@@ -74,6 +75,7 @@ const folderSchema = z.object({
 const navItems = [
   { icon: MessageSquare, label: "Чат", href: "/" },
   { icon: FileText, label: "Заметки", href: "/notes" },
+  { icon: ListChecks, label: "Списки", href: "/lists" },
   { icon: HardDrive, label: "Файлы", href: "/files" },
   { icon: Clock, label: "Напоминания", href: "/reminders" },
 ] as const;
@@ -258,16 +260,16 @@ export default function Layout({ children }: { children: React.ReactNode }) {
                 <Link key={item.href} href={item.href} className="block">
                   <div
                     className={cn(
-                      "flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm font-medium leading-5 tracking-normal transition-all duration-200",
+                      "flex w-full min-w-0 items-center gap-3 px-3 py-2.5 rounded-lg text-sm font-medium leading-5 tracking-normal transition-all duration-200",
                       isActive
                         ? "bg-primary text-primary-foreground shadow-sm shadow-primary/20"
                         : "text-sidebar-foreground/70 hover:bg-sidebar-accent hover:text-sidebar-accent-foreground",
                     )}
                   >
-                    <item.icon className="w-4 h-4" />
-                    <span>{item.label}</span>
+                    <item.icon className="w-4 h-4 shrink-0" />
+                    <span className="min-w-0 truncate">{item.label}</span>
                     {badge && (
-                      <span className="ml-auto bg-destructive text-destructive-foreground text-[10px] font-bold px-2 py-0.5 rounded-full">
+                      <span className="ml-1 inline-flex h-5 min-w-[1.25rem] shrink-0 items-center justify-center rounded-full bg-destructive px-1.5 text-[10px] font-bold leading-none text-destructive-foreground">
                         {badge}
                       </span>
                     )}
@@ -295,7 +297,7 @@ export default function Layout({ children }: { children: React.ReactNode }) {
                 <DialogHeader>
                   <DialogTitle>Создать папку</DialogTitle>
                   <DialogDescription>
-                    Добавьте папку, чтобы удобно группировать заметки, файлы и напоминания.
+                    Добавьте папку, чтобы удобно группировать заметки, списки, файлы и напоминания.
                   </DialogDescription>
                 </DialogHeader>
                 <Form {...createFolderForm}>
@@ -553,16 +555,16 @@ export default function Layout({ children }: { children: React.ReactNode }) {
                         >
                           <div
                             className={cn(
-                              "flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm font-medium leading-5 tracking-normal transition-all duration-200",
+                              "flex w-full min-w-0 items-center gap-3 px-3 py-2.5 rounded-lg text-sm font-medium leading-5 tracking-normal transition-all duration-200",
                               isActive
                                 ? "bg-primary text-primary-foreground shadow-sm shadow-primary/20"
                                 : "text-sidebar-foreground/70 hover:bg-sidebar-accent hover:text-sidebar-accent-foreground",
                             )}
                           >
                             <item.icon className="w-4 h-4 shrink-0" />
-                            <span className="truncate">{item.label}</span>
+                            <span className="min-w-0 flex-1 truncate">{item.label}</span>
                             {badge && (
-                              <span className="ml-auto bg-destructive text-destructive-foreground text-[10px] font-bold px-2 py-0.5 rounded-full">
+                              <span className="mr-1 inline-flex h-5 min-w-5 shrink-0 items-center justify-center rounded-full bg-destructive px-1.5 text-[10px] font-bold leading-none text-destructive-foreground">
                                 {badge}
                               </span>
                             )}

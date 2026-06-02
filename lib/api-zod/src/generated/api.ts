@@ -155,7 +155,7 @@ export const listItemsQueryLimitDefault = 50;
 export const listItemsQueryOffsetDefault = 0;
 
 export const ListItemsQueryParams = zod.object({
-  type: zod.enum(["note", "file", "reminder"]).optional(),
+  type: zod.enum(["note", "file", "reminder", "list"]).optional(),
   folderId: zod.coerce.number().nullish(),
   status: zod.enum(["active", "archived", "completed"]).optional(),
   limit: zod.coerce.number().default(listItemsQueryLimitDefault),
@@ -167,7 +167,7 @@ export const ListItemsResponseItem = zod.object({
   userId: zod.number(),
   folderId: zod.number().nullish(),
   folderName: zod.string().nullish(),
-  type: zod.enum(["note", "file", "reminder"]),
+  type: zod.enum(["note", "file", "reminder", "list"]),
   title: zod.string(),
   content: zod.string().nullish(),
   summary: zod.string().nullish(),
@@ -189,7 +189,7 @@ export const ListItemsResponse = zod.array(ListItemsResponseItem);
  * @summary Create a new item
  */
 export const CreateItemBody = zod.object({
-  type: zod.enum(["note", "file", "reminder"]),
+  type: zod.enum(["note", "file", "reminder", "list"]),
   title: zod.string(),
   content: zod.string().nullish(),
   folderId: zod.number().nullish(),
@@ -208,7 +208,7 @@ export const GetItemResponse = zod.object({
   userId: zod.number(),
   folderId: zod.number().nullish(),
   folderName: zod.string().nullish(),
-  type: zod.enum(["note", "file", "reminder"]),
+  type: zod.enum(["note", "file", "reminder", "list"]),
   title: zod.string(),
   content: zod.string().nullish(),
   summary: zod.string().nullish(),
@@ -245,7 +245,7 @@ export const UpdateItemResponse = zod.object({
   userId: zod.number(),
   folderId: zod.number().nullish(),
   folderName: zod.string().nullish(),
-  type: zod.enum(["note", "file", "reminder"]),
+  type: zod.enum(["note", "file", "reminder", "list"]),
   title: zod.string(),
   content: zod.string().nullish(),
   summary: zod.string().nullish(),
@@ -370,7 +370,7 @@ export const ClassifyContentBody = zod.object({
 });
 
 export const ClassifyContentResponse = zod.object({
-  type: zod.enum(["note", "reminder", "file", "chat"]),
+  type: zod.enum(["note", "reminder", "file", "list", "chat"]),
   title: zod.string().nullish(),
   summary: zod.string().nullish(),
   cleanedContent: zod.string().nullish(),
@@ -384,7 +384,7 @@ export const ClassifyContentResponse = zod.object({
       userId: zod.number(),
       folderId: zod.number().nullish(),
       folderName: zod.string().nullish(),
-      type: zod.enum(["note", "file", "reminder"]),
+      type: zod.enum(["note", "file", "reminder", "list"]),
       title: zod.string(),
       content: zod.string().nullish(),
       summary: zod.string().nullish(),
@@ -409,7 +409,7 @@ export const ClassifyContentResponse = zod.object({
  */
 export const SearchItemsQueryParams = zod.object({
   q: zod.coerce.string(),
-  type: zod.enum(["note", "file", "reminder"]).optional(),
+  type: zod.enum(["note", "file", "reminder", "list"]).optional(),
   folderId: zod.coerce.number().nullish(),
 });
 
@@ -418,7 +418,7 @@ export const SearchItemsResponseItem = zod.object({
   userId: zod.number(),
   folderId: zod.number().nullish(),
   folderName: zod.string().nullish(),
-  type: zod.enum(["note", "file", "reminder"]),
+  type: zod.enum(["note", "file", "reminder", "list"]),
   title: zod.string(),
   content: zod.string().nullish(),
   summary: zod.string().nullish(),
@@ -463,7 +463,7 @@ export const GetRecentItemsResponseItem = zod.object({
   userId: zod.number(),
   folderId: zod.number().nullish(),
   folderName: zod.string().nullish(),
-  type: zod.enum(["note", "file", "reminder"]),
+  type: zod.enum(["note", "file", "reminder", "list"]),
   title: zod.string(),
   content: zod.string().nullish(),
   summary: zod.string().nullish(),
@@ -495,7 +495,7 @@ export const GetUpcomingRemindersResponseItem = zod.object({
   userId: zod.number(),
   folderId: zod.number().nullish(),
   folderName: zod.string().nullish(),
-  type: zod.enum(["note", "file", "reminder"]),
+  type: zod.enum(["note", "file", "reminder", "list"]),
   title: zod.string(),
   content: zod.string().nullish(),
   summary: zod.string().nullish(),

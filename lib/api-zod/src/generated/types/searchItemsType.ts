@@ -13,4 +13,5 @@ export const SearchItemsType = {
   note: "note",
   file: "file",
   reminder: "reminder",
+  list: "list",
 } as const;

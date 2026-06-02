@@ -12,4 +12,5 @@ export const ListItemsType = {
   note: "note",
   file: "file",
   reminder: "reminder",
+  list: "list",
 } as const;

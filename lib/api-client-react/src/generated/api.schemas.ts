@@ -81,6 +81,7 @@ export const ItemType = {
   note: "note",
   file: "file",
   reminder: "reminder",
+  list: "list",
 } as const;
 
 export type ItemStatus = (typeof ItemStatus)[keyof typeof ItemStatus];
@@ -131,6 +132,7 @@ export const CreateItemBodyType = {
   note: "note",
   file: "file",
   reminder: "reminder",
+  list: "list",
 } as const;
 
 export interface CreateItemBody {
@@ -195,6 +197,7 @@ export const ClassifyContentResponseType = {
   note: "note",
   reminder: "reminder",
   file: "file",
+  list: "list",
   chat: "chat",
 } as const;
 
@@ -285,6 +288,7 @@ export const ListItemsType = {
   note: "note",
   file: "file",
   reminder: "reminder",
+  list: "list",
 } as const;
 
 export type ListItemsStatus =
@@ -312,6 +316,7 @@ export const SearchItemsType = {
   note: "note",
   file: "file",
   reminder: "reminder",
+  list: "list",
 } as const;
 
 export type GetRecentItemsParams = {

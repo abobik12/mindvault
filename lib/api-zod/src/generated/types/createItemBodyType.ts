@@ -13,4 +13,5 @@ export const CreateItemBodyType = {
   note: "note",
   file: "file",
   reminder: "reminder",
+  list: "list",
 } as const;

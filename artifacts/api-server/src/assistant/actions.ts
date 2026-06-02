@@ -2,14 +2,29 @@ import { and, desc, eq } from "drizzle-orm";
 import { conversations, db, foldersTable, itemsTable, messages } from "@workspace/db";
 import { formatMoscowDateTime, parseReminderDateTime } from "../lib/time";
 import { logger } from "../lib/logger";
+import {
+  compact,
+  getKeywordCommand,
+  isLikelyQuestion,
+  looksLikeListCandidate,
+  looksLikeReminderCandidate,
+  normalizeText,
+  parseListCommand,
+  parseReminderCommand,
+  serializeListContent,
+  titleFromText,
+  type KeywordCommand,
+} from "./command-parser";
 
 export type AssistantActionIntent =
   | "chat_general"
   | "search_user_content"
   | "answer_about_user_content"
   | "create_note"
+  | "create_list"
   | "update_note"
   | "delete_note"
+  | "delete_list"
   | "create_reminder"
   | "update_reminder"
   | "delete_reminder"
@@ -31,13 +46,14 @@ export type AssistantActionContext = {
   assistantReply?: string;
   savedItem?: {
     id: number;
-    type: "note" | "file" | "reminder";
+    type: "note" | "file" | "reminder" | "list";
     title: string;
     folderId: number | null;
     folderName: string | null;
     reminderAt?: string | null;
+    content?: string | null;
   } | null;
-  suggestedActions?: Array<"save_note" | "save_reminder" | "ignore">;
+  suggestedActions?: Array<"save_note" | "save_reminder" | "create_list" | "ignore">;
   pendingAction?: PendingAction;
   actionResult?: {
     success: boolean;
@@ -48,7 +64,7 @@ export type AssistantActionContext = {
 
 export type AssistantActionResponse = {
   handled: boolean;
-  type: "note" | "reminder" | "file" | "folder" | "chat";
+  type: "note" | "reminder" | "file" | "list" | "folder" | "chat";
   intentType: AssistantActionIntent;
   responseMode: AssistantActionContext["responseMode"];
   shouldSave: boolean;
@@ -60,7 +76,7 @@ export type AssistantActionResponse = {
   confidence: number;
   reminderAt: string | null;
   savedItem: Record<string, unknown> | null;
-  suggestedActions: Array<"save_note" | "save_reminder" | "ignore">;
+  suggestedActions: Array<"save_note" | "save_reminder" | "create_list" | "ignore">;
   assistantContext: AssistantActionContext;
   message: string;
 };
@@ -69,7 +85,7 @@ type PendingAction =
   | {
       action: "delete_item";
       itemId: number;
-      itemType: "note" | "file" | "reminder";
+      itemType: "note" | "file" | "reminder" | "list";
       title: string;
     }
   | {
@@ -88,6 +104,7 @@ type FolderRecord = typeof foldersTable.$inferSelect;
 const NOTE_WORD_RE = /(заметк|запис|иде[яюи])/i;
 const FILE_WORD_RE = /(файл|документ|вложен|презентац|pdf|docx|pptx|txt|md|csv)/i;
 const REMINDER_WORD_RE = /(напомин|дедлайн|срок|задач|не\s+забыть)/i;
+const LIST_WORD_RE = /(список|чеклист|todo|to-do|покупк)/i;
 const FOLDER_WORD_RE = /(папк|раздел|каталог)/i;
 const SEARCH_RE = /(какие|покажи|найди|что\s+у\s+меня|что\s+я\s+сохранял|список|перечисли)/i;
 const CREATE_NOTE_RE = /(сохрани|создай|добавь|запиши).{0,40}(заметк|запис|иде)|^идея\s*[:：-]/i;
@@ -96,6 +113,10 @@ const UPDATE_RE = /(измени|обнови|перенеси|переимен�
 const DELETE_RE = /(удали|удалить|сотри)/i;
 const CONFIRM_RE = /^(да|подтверждаю|удали|удаляй|очисти|очищай|точно|ок|хорошо)$/i;
 const CANCEL_RE = /^(нет|отмена|отмени|не надо|не удаляй|стоп|cancel)$/i;
+const LEGACY_AUTO_SAVE_ENABLED = false;
+
+type AssistantItemType = "note" | "file" | "reminder" | "list";
+type SuggestedActionType = "save_note" | "save_reminder" | "create_list" | "ignore";
 
 function baseResponse(intentType: AssistantActionIntent, message: string): AssistantActionResponse {
   return {
@@ -139,20 +160,6 @@ function chatResponse(): AssistantActionResponse {
   };
 }
 
-function normalizeText(value: string): string {
-  return value.toLowerCase().replace(/ё/g, "е").replace(/\s+/g, " ").trim();
-}
-
-function compact(value: string): string {
-  return value.replace(/\s+/g, " ").trim();
-}
-
-function titleFromText(value: string, fallback: string): string {
-  const normalized = compact(value);
-  if (!normalized) return fallback;
-  return normalized.length > 90 ? `${normalized.slice(0, 87)}...` : normalized;
-}
-
 function itemTitle(item: ItemRecord): string {
   return item.type === "file" ? item.originalFilename || item.title : item.title;
 }
@@ -170,6 +177,7 @@ function savedItemFromRecord(item: ItemRecord, folders: FolderRecord[]) {
     folderId: item.folderId ?? null,
     folderName: folderNameFor(item, folders),
     reminderAt: item.reminderAt ? item.reminderAt.toISOString() : null,
+    content: item.content ?? null,
   };
 }
 
@@ -208,7 +216,7 @@ function extractBetween(message: string, left: RegExp, right: RegExp): string | 
   return compact(message.slice(leftMatch.index + leftMatch[0].length, rightMatch.index));
 }
 
-function extractTarget(message: string, type: "note" | "file" | "reminder" | "folder" | "item"): string {
+function extractTarget(message: string, type: "note" | "file" | "reminder" | "list" | "folder" | "item"): string {
   const quoted = /[«"]([^»"]+)[»"]/.exec(message)?.[1];
   if (quoted) return compact(quoted);
 
@@ -224,7 +232,9 @@ function extractTarget(message: string, type: "note" | "file" | "reminder" | "fo
         ? "(?:файл|документ)"
         : type === "reminder"
           ? "(?:напоминание|напоминалку)"
-          : "(?:объект|элемент|это)";
+          : type === "list"
+            ? "(?:список|чеклист)"
+            : "(?:объект|элемент|это)";
 
   const re = new RegExp(`${typeWords}\\s+(?:про\\s+)?([^.,!?]+?)(?:\\s+в\\s+папк|\\s+на\\s+|$)`, "i");
   const match = re.exec(message)?.[1];
@@ -339,7 +349,7 @@ function findFolder(folders: FolderRecord[], name: string | null): FolderRecord 
   );
 }
 
-function searchItems(items: ItemRecord[], query: string, type?: "note" | "file" | "reminder"): ItemRecord[] {
+function searchItems(items: ItemRecord[], query: string, type?: AssistantItemType): ItemRecord[] {
   const normalized = normalizeText(query);
   const terms = normalized.split(/[^\p{L}\p{N}_-]+/u).filter((term) => term.length > 2);
   const filtered = type ? items.filter((item) => item.type === type) : items;
@@ -427,7 +437,9 @@ async function executePendingAction(userId: number, action: PendingAction, folde
       };
     }
 
-    const message = `Готово: удалил ${action.itemType === "note" ? "заметку" : action.itemType === "file" ? "файл" : "напоминание"} «${itemTitle(deleted)}».`;
+    const deletedTypeLabel =
+      action.itemType === "note" ? "заметку" : action.itemType === "file" ? "файл" : action.itemType === "list" ? "список" : "напоминание";
+    const message = `Готово: удалил ${deletedTypeLabel} «${itemTitle(deleted)}».`;
     return baseResponse(`delete_${action.itemType}` as AssistantActionIntent, message);
   }
 
@@ -478,6 +490,161 @@ function withPending(intent: AssistantActionIntent, message: string, pendingActi
   };
 }
 
+function withSuggestedActions(
+  message: string,
+  suggestedActions: SuggestedActionType[],
+): AssistantActionResponse {
+  return {
+    ...baseResponse("unknown_or_ambiguous", message),
+    responseMode: "suggest_actions",
+    confidence: 0.72,
+    suggestedActions,
+    assistantContext: {
+      intentType: "unknown_or_ambiguous",
+      responseMode: "suggest_actions",
+      assistantReply: message,
+      savedItem: null,
+      suggestedActions,
+      actionResult: { success: false, action: "suggest_action", error: "confirmation_required" },
+    },
+  };
+}
+
+async function executeKeywordCommand({
+  command,
+  userId,
+  folders,
+  folderId,
+}: {
+  command: KeywordCommand;
+  userId: number;
+  folders: FolderRecord[];
+  folderId?: number | null;
+}): Promise<AssistantActionResponse> {
+  const folder = folderId ? folders.find((entry) => entry.id === folderId) ?? null : null;
+
+  if (command.kind === "note") {
+    const text = compact(command.text);
+    if (!text) return baseResponse("unknown_or_ambiguous", "Введите текст заметки после слова «заметка».");
+
+    const [item] = await db
+      .insert(itemsTable)
+      .values({
+        userId,
+        type: "note",
+        title: titleFromText(text, "Новая заметка"),
+        content: text,
+        folderId: folder?.id ?? null,
+        status: "active",
+        aiTags: [],
+      })
+      .returning();
+
+    const savedItem = savedItemFromRecord(item, folders);
+    const message = `Заметка сохранена: ${text}`;
+    return {
+      ...baseResponse("create_note", message),
+      type: "note",
+      responseMode: "saved",
+      shouldSave: true,
+      title: item.title,
+      cleanedContent: text,
+      savedItem: itemResponse(item, folders),
+      assistantContext: {
+        intentType: "create_note",
+        responseMode: "saved",
+        autoSaved: false,
+        assistantReply: message,
+        savedItem,
+        actionResult: { success: true, action: "create_note" },
+      },
+    };
+  }
+
+  if (command.kind === "reminder") {
+    const text = compact(command.text);
+    if (!text) return baseResponse("unknown_or_ambiguous", "Введите текст напоминания после слова «напоминание».");
+
+    const parsed = parseReminderCommand(text);
+    if (!parsed.hasDate) return baseResponse("unknown_or_ambiguous", "Уточните дату и время для напоминания.");
+    if (!parsed.hasTime || !parsed.reminderAt) return baseResponse("unknown_or_ambiguous", "Уточните время напоминания.");
+    if (!parsed.text) return baseResponse("unknown_or_ambiguous", "Уточните текст напоминания.");
+
+    const reminderText = parsed.text;
+    const [item] = await db
+      .insert(itemsTable)
+      .values({
+        userId,
+        type: "reminder",
+        title: titleFromText(reminderText, "Новое напоминание"),
+        content: reminderText,
+        folderId: folder?.id ?? null,
+        reminderAt: parsed.reminderAt,
+        status: "active",
+        aiTags: [],
+      })
+      .returning();
+
+    const savedItem = savedItemFromRecord(item, folders);
+    const message = `Напоминание создано: ${formatMoscowDateTime(parsed.reminderAt)} — ${reminderText}`;
+    return {
+      ...baseResponse("create_reminder", message),
+      type: "reminder",
+      responseMode: "saved",
+      shouldSave: true,
+      title: item.title,
+      cleanedContent: reminderText,
+      reminderAt: parsed.reminderAt.toISOString(),
+      savedItem: itemResponse(item, folders),
+      assistantContext: {
+        intentType: "create_reminder",
+        responseMode: "saved",
+        autoSaved: false,
+        assistantReply: message,
+        savedItem,
+        actionResult: { success: true, action: "create_reminder" },
+      },
+    };
+  }
+
+  const parsed = parseListCommand(command.text);
+  if (!parsed) return baseResponse("unknown_or_ambiguous", "Введите пункты списка после слова «список».");
+
+  const content = serializeListContent(parsed.items);
+  const [item] = await db
+    .insert(itemsTable)
+    .values({
+      userId,
+      type: "list",
+      title: parsed.title,
+      content,
+      folderId: folder?.id ?? null,
+      status: "active",
+      aiTags: [],
+    })
+    .returning();
+
+  const savedItem = savedItemFromRecord(item, folders);
+  const message = [`Список создан: ${parsed.title}`, ...parsed.items.map((entry) => `- ${entry}`)].join("\n");
+  return {
+    ...baseResponse("create_list", message),
+    type: "list",
+    responseMode: "saved",
+    shouldSave: true,
+    title: item.title,
+    cleanedContent: content,
+    savedItem: itemResponse(item, folders),
+    assistantContext: {
+      intentType: "create_list",
+      responseMode: "saved",
+      autoSaved: false,
+      assistantReply: message,
+      savedItem,
+      actionResult: { success: true, action: "create_list" },
+    },
+  };
+}
+
 export async function classifyAndExecuteAssistantAction({
   userId,
   content,
@@ -510,6 +677,26 @@ export async function classifyAndExecuteAssistantAction({
     return baseResponse("unknown_or_ambiguous", "Ок, действие отменено.");
   }
 
+  const keywordCommand = getKeywordCommand(content);
+  if (keywordCommand) {
+    const result = await executeKeywordCommand({
+      command: keywordCommand,
+      userId,
+      folders,
+      folderId,
+    });
+    logger.info(
+      {
+        ...logBase,
+        intent: result.intentType,
+        responseMode: result.responseMode,
+        savedItemTitle: result.assistantContext.savedItem?.title ?? null,
+      },
+      "[assistant] keyword command handled",
+    );
+    return result;
+  }
+
   if (/очисти\s+(чат|историю)|удали\s+историю\s+чата/i.test(normalized)) {
     if (!conversationId) return baseResponse("clear_chat", "Не удалось очистить чат: текущий чат не найден.");
     return withPending(
@@ -531,6 +718,10 @@ export async function classifyAndExecuteAssistantAction({
     if (REMINDER_WORD_RE.test(normalized)) {
       const reminders = items.filter((item) => item.type === "reminder");
       return baseResponse("search_reminders", listItemsMessage("Ваши напоминания", reminders, folders));
+    }
+    if (LIST_WORD_RE.test(normalized)) {
+      const lists = items.filter((item) => item.type === "list");
+      return baseResponse("search_user_content", listItemsMessage("Ваши списки", lists, folders));
     }
     if (FOLDER_WORD_RE.test(normalized)) {
       const message =
@@ -574,7 +765,15 @@ export async function classifyAndExecuteAssistantAction({
     );
   }
 
-  if (CREATE_NOTE_RE.test(normalized)) {
+  if (looksLikeReminderCandidate(content)) {
+    return withSuggestedActions("Похоже, это напоминание. Создать?", ["save_reminder", "save_note", "ignore"]);
+  }
+
+  if (looksLikeListCandidate(content)) {
+    return withSuggestedActions("Похоже, это список. Создать?", ["create_list", "save_note", "ignore"]);
+  }
+
+  if (LEGACY_AUTO_SAVE_ENABLED && CREATE_NOTE_RE.test(normalized)) {
     const folder = findFolder(folders, extractFolderName(content)) ?? (folderId ? folders.find((entry) => entry.id === folderId) ?? null : null);
     const text = stripFolderMention(extractCreateContent(content, content));
     const [item] = await db
@@ -607,7 +806,7 @@ export async function classifyAndExecuteAssistantAction({
     };
   }
 
-  if (CREATE_REMINDER_RE.test(normalized) || (/(завтра|послезавтра|сегодня|\d{1,2}[:.]\d{2})/i.test(normalized) && !/(помоги|объясни|какие|найди|покажи)/i.test(normalized))) {
+  if (LEGACY_AUTO_SAVE_ENABLED && (CREATE_REMINDER_RE.test(normalized) || (/(завтра|послезавтра|сегодня|\d{1,2}[:.]\d{2})/i.test(normalized) && !/(помоги|объясни|какие|найди|покажи)/i.test(normalized)))) {
     const remindAt = parseRussianDateTime(content);
     const folder = findFolder(folders, extractFolderName(content)) ?? (folderId ? folders.find((entry) => entry.id === folderId) ?? null : null);
     const text = stripFolderMention(removeDateWords(extractCreateContent(content, content)).replace(/^(напомни|не\s+забыть)\s*/i, ""));
@@ -663,16 +862,16 @@ export async function classifyAndExecuteAssistantAction({
     return baseResponse("update_reminder", `Готово: перенес напоминание «${updated.title}» на ${formatMoscowDateTime(remindAt)}.`);
   }
 
-  if (DELETE_RE.test(normalized) && (NOTE_WORD_RE.test(normalized) || FILE_WORD_RE.test(normalized) || REMINDER_WORD_RE.test(normalized))) {
-    const type = NOTE_WORD_RE.test(normalized) ? "note" : FILE_WORD_RE.test(normalized) ? "file" : "reminder";
+  if (DELETE_RE.test(normalized) && (NOTE_WORD_RE.test(normalized) || FILE_WORD_RE.test(normalized) || REMINDER_WORD_RE.test(normalized) || LIST_WORD_RE.test(normalized))) {
+    const type = NOTE_WORD_RE.test(normalized) ? "note" : FILE_WORD_RE.test(normalized) ? "file" : LIST_WORD_RE.test(normalized) ? "list" : "reminder";
     const target = extractTarget(content, type);
     const matches = searchItems(items, target, type);
-    if (matches.length === 0) return baseResponse(`delete_${type}` as AssistantActionIntent, `Я не нашел ${type === "note" ? "заметку" : type === "file" ? "файл" : "напоминание"}${target ? ` «${target}»` : ""}.`);
+    if (matches.length === 0) return baseResponse(`delete_${type}` as AssistantActionIntent, `Я не нашел ${type === "note" ? "заметку" : type === "file" ? "файл" : type === "list" ? "список" : "напоминание"}${target ? ` «${target}»` : ""}.`);
     if (matches.length > 1) return baseResponse(`delete_${type}` as AssistantActionIntent, listItemsMessage("Нашел несколько объектов, уточните какой удалить", matches, folders));
     const item = matches[0];
     return withPending(
       `delete_${type}` as AssistantActionIntent,
-      `Удалить ${type === "note" ? "заметку" : type === "file" ? "файл" : "напоминание"} «${itemTitle(item)}»? Ответьте «да», чтобы подтвердить.`,
+      `Удалить ${type === "note" ? "заметку" : type === "file" ? "файл" : type === "list" ? "список" : "напоминание"} «${itemTitle(item)}»? Ответьте «да», чтобы подтвердить.`,
       { action: "delete_item", itemId: item.id, itemType: type, title: itemTitle(item) },
     );
   }
@@ -680,7 +879,7 @@ export async function classifyAndExecuteAssistantAction({
   if (/перемест|перенеси|добавь.+в\s+папк/i.test(normalized)) {
     const folder = findFolder(folders, extractFolderName(content));
     if (!folder) return baseResponse("move_item_to_folder", "Я не нашел целевую папку. Уточните название папки или создайте её.");
-    const type = NOTE_WORD_RE.test(normalized) ? "note" : FILE_WORD_RE.test(normalized) ? "file" : REMINDER_WORD_RE.test(normalized) ? "reminder" : undefined;
+    const type = NOTE_WORD_RE.test(normalized) ? "note" : FILE_WORD_RE.test(normalized) ? "file" : REMINDER_WORD_RE.test(normalized) ? "reminder" : LIST_WORD_RE.test(normalized) ? "list" : undefined;
     const target = type ? extractTarget(content, type) : extractTarget(content, "item");
     const matches = searchItems(items, target, type);
     if (matches.length === 0) return baseResponse("move_item_to_folder", `Я не нашел объект${target ? ` «${target}»` : ""}.`);
