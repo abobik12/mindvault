@@ -29,11 +29,20 @@ function commandSummary(input: string) {
   return { kind: "note", text: command.text };
 }
 
-test("notes are created only by the first keyword", () => {
+test("explicit note commands are recognized without AI", () => {
   assert.deepEqual(commandSummary("заметка изучить Java"), { kind: "note", text: "изучить Java" });
   assert.deepEqual(commandSummary("Заметка изучить Java"), { kind: "note", text: "изучить Java" });
   assert.deepEqual(commandSummary("заметка: изучить Java"), { kind: "note", text: "изучить Java" });
   assert.deepEqual(commandSummary("заметка    купить хлеб"), { kind: "note", text: "купить хлеб" });
+  assert.deepEqual(commandSummary("создай заметку купить молоко"), { kind: "note", text: "купить молоко" });
+  assert.deepEqual(commandSummary("сохрани заметку идея для диплома: добавить раздел про ИИ"), {
+    kind: "note",
+    text: "идея для диплома: добавить раздел про ИИ",
+  });
+  assert.deepEqual(commandSummary("запиши: подготовить текст защиты"), {
+    kind: "note",
+    text: "подготовить текст защиты",
+  });
   assert.deepEqual(commandSummary("заметка"), { kind: "note", text: "" });
   assert.deepEqual(commandSummary("заметка список напоминание"), { kind: "note", text: "список напоминание" });
 });
@@ -58,6 +67,20 @@ test("lists are parsed without AI and ignore empty items", () => {
   assert.deepEqual(commandSummary("список покупки: хлеб\nмолоко\nяйца"), {
     kind: "list",
     parsed: { title: "Покупки", items: ["хлеб", "молоко", "яйца"] },
+  });
+  assert.deepEqual(commandSummary("создай список дел: сделать презентацию, проверить диплом, подготовить речь"), {
+    kind: "list",
+    parsed: {
+      title: "Список дел",
+      items: ["сделать презентацию", "проверить диплом", "подготовить речь"],
+    },
+  });
+  assert.deepEqual(commandSummary("чеклист для защиты: открыть сайт, показать чат, показать файлы"), {
+    kind: "list",
+    parsed: {
+      title: "Для защиты",
+      items: ["открыть сайт", "показать чат", "показать файлы"],
+    },
   });
   assert.deepEqual(commandSummary("список заметка, напоминание"), {
     kind: "list",
@@ -111,6 +134,30 @@ test("reminders parse explicit dates and use default time when time is omitted",
     { month: 6, day: 29, hour: 9, minute: 0 },
   );
 
+  const birthdayDateAtEndCommand = getKeywordCommand("напоминание день рождения Дани 29 июня");
+  assert.equal(birthdayDateAtEndCommand?.kind, "reminder");
+  const birthdayDateAtEnd = parseReminderCommand(birthdayDateAtEndCommand.text);
+  assert.equal(birthdayDateAtEnd.hasDate, true);
+  assert.equal(birthdayDateAtEnd.hasTime, false);
+  assert.equal(birthdayDateAtEnd.text, "день рождения Дани");
+  assert.ok(birthdayDateAtEnd.reminderAt instanceof Date);
+  assert.deepEqual(
+    (({ month, day, hour, minute }) => ({ month, day, hour, minute }))(moscowParts(birthdayDateAtEnd.reminderAt)),
+    { month: 6, day: 29, hour: 9, minute: 0 },
+  );
+
+  const imperativeBirthdayCommand = getKeywordCommand("напомни 29 июня день рождения Дани");
+  assert.equal(imperativeBirthdayCommand?.kind, "reminder");
+  const imperativeBirthday = parseReminderCommand(imperativeBirthdayCommand.text);
+  assert.equal(imperativeBirthday.text, "день рождения Дани");
+  assert.ok(imperativeBirthday.reminderAt instanceof Date);
+
+  const createReminderCommand = getKeywordCommand("создай напоминание на 15 мая подготовить презентацию");
+  assert.equal(createReminderCommand?.kind, "reminder");
+  const createReminder = parseReminderCommand(createReminderCommand.text);
+  assert.equal(createReminder.text, "подготовить презентацию");
+  assert.ok(createReminder.reminderAt instanceof Date);
+
   const noDateCommand = getKeywordCommand("напоминание позвонить преподавателю");
   assert.equal(noDateCommand?.kind, "reminder");
   const noDate = parseReminderCommand(noDateCommand.text);
@@ -158,7 +205,7 @@ test("ordinary and ambiguous messages are not auto-created", () => {
     reminderCandidate: false,
     listCandidate: true,
   });
-  assert.deepEqual(commandSummary("создай заметку изучить Java"), {
+  assert.deepEqual(commandSummary("как создать заметку для изучения Java?"), {
     kind: "chat",
     reminderCandidate: false,
     listCandidate: false,

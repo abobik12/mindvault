@@ -1,4 +1,4 @@
-﻿import { Router, type IRouter } from "express";
+import { Router, type IRouter } from "express";
 import { eq, and, desc, inArray } from "drizzle-orm";
 import { db, conversations, messages, itemsTable, foldersTable } from "@workspace/db";
 import { requireAuth } from "../middlewares/auth";
@@ -22,12 +22,17 @@ import { buildAssistantContext, formatContextForPrompt, type UserContextData } f
 import { canAttemptTextExtraction, extractTextFromUpload } from "../lib/file-extraction";
 import {
   classifyAndExecuteAssistantAction,
+  executeValidatedAssistantIntent,
   type AssistantActionContext,
   type AssistantActionIntent,
 } from "../assistant/actions";
+import { classifyAssistantIntent } from "../assistant/ai-intent-classifier";
 
 const router: IRouter = Router();
-const OPENAI_TEXT_MODEL = process.env.OPENAI_MODEL || "gpt-4.1-mini";
+const AI_TEXT_MODEL =
+  process.env.OPENROUTER_API_KEY?.trim()
+    ? process.env.OPENROUTER_MODEL || "openai/gpt-4o-mini"
+    : process.env.OPENAI_MODEL || "gpt-4.1-mini";
 const DEFAULT_CONVERSATION_TITLE = "MindVault Assistant";
 const ATTACHMENT_TEXT_LIMIT = 12000;
 const DEFAULT_ASSISTANT_SYSTEM_PROMPT = `Ты — ассистент MindVault, персонального рабочего кабинета пользователя.
@@ -696,7 +701,11 @@ router.post("/gemini/conversations/:id/messages", requireAuth, async (req, res):
     res.status(400).json({ error: "Некорректные данные запроса" });
     return;
   }
-  const assistantContext = sanitizeAssistantContext((req.body as Record<string, unknown>)?.assistantContext);
+  const rawBody = req.body as Record<string, unknown>;
+  const requestedFolderId =
+    typeof rawBody.folderId === "number" && Number.isInteger(rawBody.folderId)
+      ? rawBody.folderId
+      : null;
 
   const [conversation] = await db
     .select()
@@ -709,9 +718,22 @@ router.post("/gemini/conversations/:id/messages", requireAuth, async (req, res):
     return;
   }
 
+  if (requestedFolderId !== null) {
+    const [requestedFolder] = await db
+      .select({ id: foldersTable.id })
+      .from(foldersTable)
+      .where(and(eq(foldersTable.id, requestedFolderId), eq(foldersTable.userId, req.auth!.userId)))
+      .limit(1);
+
+    if (!requestedFolder) {
+      res.status(404).json({ error: "Папка не найдена" });
+      return;
+    }
+  }
+
   const attachments = await getValidatedAttachments(
     req.auth!.userId,
-    (req.body as Record<string, unknown>)?.attachments,
+    rawBody.attachments,
   );
   const attachmentMetadata = attachments.length > 0 ? { attachments } : null;
   const attachmentContext = formatAttachmentsForPrompt(attachments);
@@ -741,6 +763,97 @@ router.post("/gemini/conversations/:id/messages", requireAuth, async (req, res):
       metadata: attachmentMetadata,
     })
     .returning();
+
+  let assistantContext: AssistantContext = null;
+  try {
+    let actionResult = await classifyAndExecuteAssistantAction({
+      userId: req.auth!.userId,
+      content: bodyParsed.data.content,
+      conversationId: conversation.id,
+      folderId: requestedFolderId,
+    });
+
+    if (!actionResult.handled && actionResult.responseMode === "reply_only") {
+      const userFolders = await db
+        .select()
+        .from(foldersTable)
+        .where(eq(foldersTable.userId, req.auth!.userId));
+      const classification = await classifyAssistantIntent({
+        message: bodyParsed.data.content,
+        folderNames: userFolders.map((folder) => folder.name),
+        model: AI_TEXT_MODEL,
+      });
+
+      if (classification.status === "valid") {
+        actionResult = await executeValidatedAssistantIntent({
+          intent: classification.value,
+          userId: req.auth!.userId,
+          folderId: requestedFolderId,
+          folders: userFolders,
+        });
+        logger.info(
+          {
+            userId: req.auth!.userId,
+            conversationId: conversation.id,
+            intent: classification.value.intent,
+            confidence: classification.value.confidence,
+            responseMode: actionResult.responseMode,
+          },
+          "[assistant] AI intent classified and handled",
+        );
+      } else if (classification.status === "invalid") {
+        logger.warn(
+          {
+            userId: req.auth!.userId,
+            conversationId: conversation.id,
+            reason: classification.reason,
+          },
+          "[assistant] AI intent response rejected by schema",
+        );
+        assistantContext = {
+          intentType: "unknown_or_ambiguous",
+          responseMode: "action_executed",
+          assistantReply:
+            "Не удалось надёжно определить действие. Уточните, что именно нужно сделать в MindVault.",
+          savedItem: null,
+          actionResult: {
+            success: false,
+            action: "ai_intent_classification",
+            error: "invalid_classifier_response",
+          },
+        };
+      } else {
+        logger.warn(
+          {
+            userId: req.auth!.userId,
+            conversationId: conversation.id,
+            reason: classification.reason,
+          },
+          "[assistant] AI intent classifier unavailable, continuing with chat fallback",
+        );
+      }
+    }
+
+    if (!assistantContext) {
+      assistantContext = actionResult.assistantContext;
+    }
+  } catch (err) {
+    logger.error(
+      { err, userId: req.auth!.userId, conversationId: conversation.id },
+      "[assistant] deterministic action failed",
+    );
+    assistantContext = {
+      intentType: "unknown_or_ambiguous",
+      responseMode: "action_executed",
+      assistantReply: "Не удалось выполнить действие: данные не были изменены. Попробуйте ещё раз.",
+      savedItem: null,
+      actionResult: {
+        success: false,
+        action: "deterministic_action",
+        error: "execution_failed",
+      },
+    };
+  }
 
   const chatHistory = await db
     .select()
@@ -780,7 +893,7 @@ router.post("/gemini/conversations/:id/messages", requireAuth, async (req, res):
     });
 
     res.write(`data: ${JSON.stringify({ content: deterministicReply })}\n\n`);
-    res.write(`data: ${JSON.stringify({ done: true })}\n\n`);
+    res.write(`data: ${JSON.stringify({ done: true, assistantContext })}\n\n`);
     res.end();
     return;
   }
@@ -817,7 +930,7 @@ router.post("/gemini/conversations/:id/messages", requireAuth, async (req, res):
     ];
 
     const stream = await ai.models.generateContentStream({
-      model: OPENAI_TEXT_MODEL,
+      model: AI_TEXT_MODEL,
       contents: contentsForGemini,
       config: { maxOutputTokens: 8192 },
     });
@@ -841,7 +954,7 @@ router.post("/gemini/conversations/:id/messages", requireAuth, async (req, res):
       const titlePrompt = `Сформируй короткий заголовок диалога (4-6 слов) по сообщению: \"${bodyParsed.data.content.slice(0, 100)}\". Ответь только заголовком, без кавычек.`;
       try {
         const titleResponse = await ai.models.generateContent({
-          model: OPENAI_TEXT_MODEL,
+          model: AI_TEXT_MODEL,
           contents: [{ role: "user", parts: [{ text: titlePrompt }] }],
           config: { maxOutputTokens: 50 },
         });
@@ -854,7 +967,7 @@ router.post("/gemini/conversations/:id/messages", requireAuth, async (req, res):
       }
     }
 
-    res.write(`data: ${JSON.stringify({ done: true })}\n\n`);
+    res.write(`data: ${JSON.stringify({ done: true, assistantContext })}\n\n`);
   } catch (err) {
     logger.error({ err }, "Ошибка при стриминге ответа AI-провайдера, используем офлайн-ответ");
 
@@ -873,425 +986,15 @@ router.post("/gemini/conversations/:id/messages", requireAuth, async (req, res):
     });
 
     res.write(`data: ${JSON.stringify({ content: fallbackResponse })}\n\n`);
-    res.write(`data: ${JSON.stringify({ done: true })}\n\n`);
+    res.write(`data: ${JSON.stringify({ done: true, assistantContext })}\n\n`);
   }
 
   res.end();
 });
 
-router.post("/gemini/classify", requireAuth, async (req, res): Promise<void> => {
-  const parsed = ClassifyContentBody.safeParse(req.body);
-  if (!parsed.success) {
-    res.status(400).json({ error: "Некорректные данные запроса" });
-    return;
-  }
-
-  const { content, folderId: requestedFolderId } = parsed.data;
-  const userId = req.auth!.userId;
-
-  const userFolders = await db
-    .select({ id: foldersTable.id, name: foldersTable.name })
-    .from(foldersTable)
-    .where(eq(foldersTable.userId, userId));
-
-  let contextualFolderId: number | null = null;
-  if (requestedFolderId !== undefined && requestedFolderId !== null) {
-    const requestedFolder = userFolders.find((folder) => folder.id === requestedFolderId);
-    if (!requestedFolder) {
-      res.status(404).json({ error: "Папка не найдена" });
-      return;
-    }
-    contextualFolderId = requestedFolder.id;
-  }
-
-  const actionResult = await classifyAndExecuteAssistantAction({
-    userId,
-    content,
-    conversationId: parsed.data.conversationId,
-    folderId: contextualFolderId,
-  });
-
-  logger.info(
-    {
-      userId,
-      conversationId: parsed.data.conversationId,
-      intent: actionResult.intentType,
-      confidence: actionResult.confidence,
-      responseMode: actionResult.responseMode,
-      actionSuccess: actionResult.assistantContext.actionResult?.success ?? actionResult.handled,
-      savedItemTitle:
-        actionResult.assistantContext.savedItem?.title ??
-        (typeof actionResult.savedItem?.title === "string" ? actionResult.savedItem.title : null),
-    },
-    "[assistant] intent routed",
-  );
-
-  res.json(actionResult);
-  return;
-
-  const folderNames = userFolders.map((folder) => folder.name).join(", ");
-
-  const classifyPrompt = `Ты — интеллектуальный классификатор контента для персонального рабочего кабинета MindVault.
-
-Проанализируй сообщение пользователя:
-\"${content}\"
-
-Доступные папки: ${folderNames || "Входящие, Заметки, Файлы, Напоминания"}
-Контекст папки (если задан): ${contextualFolderId ? `ID ${contextualFolderId}` : "не задан"}
-Текущая дата/время (Москва, UTC+3): ${getCurrentMoscowDateTimeForModel()}
-
-Верни ТОЛЬКО валидный JSON в формате:
-{
-  "intentType": "chat_only" | "save_note" | "save_reminder" | "save_file" | "action_on_existing",
-  "type": "note" | "reminder" | "file" | "chat",
-  "title": "string или null",
-  "summary": "string или null",
-  "cleanedContent": "string или null",
-  "suggestedFolder": "string или null",
-  "tags": ["array", "of", "tags"],
-  "confidence": число от 0 до 1,
-  "reminderAt": "ISO дата-время или null",
-  "shouldSave": true | false,
-  "responseMode": "reply_only" | "saved" | "suggest_actions" | "action_executed"
-}
-
-Правила:
-- chat_only: вопрос, уточнение, просьба объяснить, анализ текста, просьба помочь без явного сохранения;
-- save_note: пользователь явно просит сохранить мысль/текст как заметку;
-- save_reminder: пользователь явно просит создать напоминание;
-- action_on_existing: пользователь просит изменить уже существующий объект (переместить, удалить, переименовать и т.д.);
-- если намерение неоднозначно — выбирай chat_only и responseMode=suggest_actions.
-
-Для reminder:
-- если пользователь указывает время без часового пояса, трактуй его как московское время;
-- возвращай reminderAt в ISO с часовым поясом +03:00.
-
-shouldSave=true только при явном намерении save_note или save_reminder.`;
-
-  let classification = {
-    intentType: "chat_only" as IntentType,
-    type: "chat" as "note" | "reminder" | "file" | "list" | "chat",
-    title: null as string | null,
-    summary: null as string | null,
-    cleanedContent: null as string | null,
-    suggestedFolder: null as string | null,
-    tags: [] as string[],
-    confidence: 0.5,
-    reminderAt: null as string | null,
-    shouldSave: false,
-    responseMode: "reply_only" as ResponseMode,
-  };
-
-  try {
-    const response = await ai.models.generateContent({
-      model: OPENAI_TEXT_MODEL,
-      contents: [{ role: "user", parts: [{ text: classifyPrompt }] }],
-      config: {
-        responseMimeType: "application/json",
-        maxOutputTokens: 8192,
-      },
-    });
-
-    const rawJson = response.text ?? "{}";
-    const parsedJson = JSON.parse(rawJson);
-    const parsedIntentType = parsedJson.intentType;
-    const parsedResponseMode = parsedJson.responseMode;
-
-    classification = {
-      intentType:
-        parsedIntentType === "save_note" ||
-        parsedIntentType === "save_reminder" ||
-        parsedIntentType === "save_file" ||
-        parsedIntentType === "action_on_existing" ||
-        parsedIntentType === "chat_only"
-          ? parsedIntentType
-          : "chat_only",
-      type: ["note", "reminder", "file", "list", "chat"].includes(parsedJson.type)
-        ? parsedJson.type
-        : "chat",
-      title: typeof parsedJson.title === "string" ? parsedJson.title : null,
-      summary: typeof parsedJson.summary === "string" ? parsedJson.summary : null,
-      cleanedContent: typeof parsedJson.cleanedContent === "string" ? parsedJson.cleanedContent : null,
-      suggestedFolder:
-        typeof parsedJson.suggestedFolder === "string" ? parsedJson.suggestedFolder : null,
-      tags: Array.isArray(parsedJson.tags)
-        ? parsedJson.tags.filter((tag: unknown) => typeof tag === "string")
-        : [],
-      confidence: typeof parsedJson.confidence === "number" ? parsedJson.confidence : 0.5,
-      reminderAt: typeof parsedJson.reminderAt === "string" ? parsedJson.reminderAt : null,
-      shouldSave: Boolean(parsedJson.shouldSave),
-      responseMode:
-        parsedResponseMode === "reply_only" ||
-        parsedResponseMode === "saved" ||
-        parsedResponseMode === "suggest_actions" ||
-        parsedResponseMode === "action_executed"
-          ? parsedResponseMode
-          : "reply_only",
-    };
-  } catch (err) {
-    logger.warn({ err }, "AI-классификация не удалась, применяем fallback");
-
-    const lowerContent = content.toLowerCase();
-    if (EXPLICIT_SAVE_REMINDER_RE.test(lowerContent)) {
-      classification.intentType = "save_reminder";
-      classification.type = "reminder";
-      classification.shouldSave = true;
-      classification.confidence = 0.75;
-      classification.responseMode = "saved";
-    } else if (EXPLICIT_SAVE_NOTE_RE.test(lowerContent)) {
-      classification.intentType = "save_note";
-      classification.type = "note";
-      classification.shouldSave = true;
-      classification.confidence = 0.7;
-      classification.responseMode = "saved";
-    } else if (ACTION_ON_EXISTING_RE.test(lowerContent)) {
-      classification.intentType = "action_on_existing";
-      classification.type = "chat";
-      classification.shouldSave = false;
-      classification.confidence = 0.7;
-      classification.responseMode = "action_executed";
-    } else if (looksLikeFutureReminderIntent(lowerContent) || AMBIGUOUS_REMINDER_RE.test(lowerContent)) {
-      classification.intentType = "chat_only";
-      classification.type = "chat";
-      classification.shouldSave = false;
-      classification.confidence = 0.6;
-      classification.responseMode = "suggest_actions";
-    } else {
-      classification.intentType = "chat_only";
-      classification.type = "chat";
-      classification.shouldSave = false;
-      classification.confidence = 0.6;
-      classification.responseMode = "reply_only";
-    }
-  }
-
-  const lowerContent = content.toLowerCase();
-  const explicitReminder = EXPLICIT_SAVE_REMINDER_RE.test(lowerContent);
-  const explicitNote = EXPLICIT_SAVE_NOTE_RE.test(lowerContent);
-  const actionRequest = ACTION_ON_EXISTING_RE.test(lowerContent);
-  const ambiguousReminder = looksLikeFutureReminderIntent(lowerContent) || AMBIGUOUS_REMINDER_RE.test(lowerContent);
-
-  if (actionRequest) {
-    classification.intentType = "action_on_existing";
-    classification.type = "chat";
-    classification.shouldSave = false;
-    classification.responseMode = "action_executed";
-  } else if (explicitReminder) {
-    classification.intentType = "save_reminder";
-    classification.type = "reminder";
-    classification.shouldSave = true;
-    classification.responseMode = "saved";
-  } else if (explicitNote) {
-    classification.intentType = "save_note";
-    classification.type = "note";
-    classification.shouldSave = true;
-    classification.responseMode = "saved";
-  } else if (classification.intentType === "save_note" || classification.intentType === "save_reminder") {
-    if (classification.confidence >= 0.82) {
-      classification.shouldSave = true;
-      classification.responseMode = "saved";
-      classification.type = classification.intentType === "save_reminder" ? "reminder" : "note";
-    } else {
-      classification.intentType = "chat_only";
-      classification.type = "chat";
-      classification.shouldSave = false;
-      classification.responseMode = "suggest_actions";
-    }
-  } else if (ambiguousReminder && classification.confidence < 0.85) {
-    classification.intentType = "chat_only";
-    classification.type = "chat";
-    classification.shouldSave = false;
-    classification.responseMode = "suggest_actions";
-  } else if (!classification.shouldSave) {
-    classification.intentType = "chat_only";
-    classification.type = "chat";
-    classification.responseMode =
-      ambiguousReminder || classification.responseMode === "suggest_actions"
-        ? "suggest_actions"
-        : "reply_only";
-  }
-
-  const buildSavedItemResponse = (
-    record: typeof itemsTable.$inferSelect,
-    folderName: string | null,
-  ) => ({
-    id: record.id,
-    userId: record.userId,
-    folderId: record.folderId ?? null,
-    folderName,
-    type: record.type,
-    title: record.title,
-    content: record.content ?? null,
-    summary: record.summary ?? null,
-    originalFilename: record.originalFilename ?? null,
-    mimeType: record.mimeType ?? null,
-    fileSize: record.fileSize ?? null,
-    fileData: record.fileData ?? null,
-    reminderAt: record.reminderAt ? record.reminderAt.toISOString() : null,
-    status: record.status,
-    aiCategory: record.aiCategory ?? null,
-    aiTags: (record.aiTags as string[]) ?? [],
-    aiConfidence: record.aiConfidence ?? null,
-    createdAt: record.createdAt.toISOString(),
-    updatedAt: record.updatedAt.toISOString(),
-  });
-
-  const buildAssistantSavedItem = (
-    record: typeof itemsTable.$inferSelect,
-    folderName: string | null,
-  ): NonNullable<AssistantContext>["savedItem"] => ({
-    id: record.id,
-    type: record.type,
-    title: record.title,
-    folderId: record.folderId ?? null,
-    folderName,
-    reminderAt: record.reminderAt ? record.reminderAt.toISOString() : null,
-  });
-
-  let savedItem: ReturnType<typeof buildSavedItemResponse> | null = null;
-  let assistantSavedItem: NonNullable<AssistantContext>["savedItem"] = null;
-  let suggestedActions: Array<"save_note" | "save_reminder" | "create_list" | "ignore"> = [];
-  let message = "";
-
-  if (classification.intentType === "action_on_existing") {
-    const moveResult = await tryHandleMoveLatestAction({
-      content,
-      userId,
-      folders: userFolders,
-    });
-
-    if (moveResult) {
-      const movedItem = moveResult!.item;
-      const movedFolder = moveResult!.folder;
-      classification.responseMode = "action_executed";
-      classification.shouldSave = false;
-      classification.type = movedItem.type;
-      const folderName = movedFolder.name;
-      savedItem = buildSavedItemResponse(movedItem, folderName);
-      assistantSavedItem = buildAssistantSavedItem(movedItem, folderName);
-      message = `Готово: объект «${movedItem.title}» перемещён в папку «${folderName}».`;
-    } else {
-      classification.intentType = "chat_only";
-      classification.type = "chat";
-      classification.shouldSave = false;
-      classification.responseMode = "reply_only";
-      message =
-        "Пока не удалось выполнить действие над существующим объектом автоматически. Уточните, какой объект изменить и в какую папку его перенести.";
-    }
-  } else if (classification.shouldSave && (classification.type === "note" || classification.type === "reminder")) {
-    let folderId: number | null = contextualFolderId;
-
-    const suggestedFolderName = classification.suggestedFolder;
-    if (!folderId && suggestedFolderName) {
-      const matchedFolder = userFolders.find(
-        (folder) => folder.name.toLowerCase() === suggestedFolderName!.toLowerCase(),
-      );
-      if (matchedFolder !== undefined) folderId = matchedFolder!.id;
-    }
-
-    if (!folderId) {
-      const folderCandidates =
-        classification.type === "reminder"
-          ? ["Напоминания", "Reminders"]
-          : ["Заметки", "Notes"];
-
-      const defaultFolder = userFolders.find((folder) =>
-        folderCandidates.some((candidate) => candidate.toLowerCase() === folder.name.toLowerCase()),
-      );
-
-      if (defaultFolder !== undefined) folderId = defaultFolder!.id;
-    }
-
-    let parsedReminderDate: Date | null = null;
-    try {
-      parsedReminderDate = classification.reminderAt ? parseReminderDateTime(classification.reminderAt) : null;
-    } catch (err) {
-      logger.warn({ err }, "Не удалось распознать дату напоминания, сохраняем без времени");
-      classification.reminderAt = null;
-    }
-
-    const [savedRecord] = await db
-      .insert(itemsTable)
-      .values({
-        userId,
-        type: classification.type as "note" | "reminder",
-        title: classification.title ?? content.slice(0, 60),
-        content: classification.cleanedContent ?? content,
-        summary: classification.summary,
-        folderId,
-        reminderAt: parsedReminderDate,
-        status: "active",
-        aiCategory: classification.suggestedFolder,
-        aiTags: classification.tags,
-        aiConfidence: classification.confidence,
-      })
-      .returning();
-
-    classification.intentType = savedRecord.type === "reminder" ? "save_reminder" : "save_note";
-    classification.type = savedRecord.type === "reminder" ? "reminder" : "note";
-    classification.responseMode = "saved";
-    classification.shouldSave = true;
-
-    if (parsedReminderDate !== null) {
-      classification.reminderAt = parsedReminderDate!.toISOString();
-    }
-
-    let folderName: string | null = null;
-    if (folderId) {
-      const folder = userFolders.find((entry) => entry.id === folderId);
-      folderName = folder?.name ?? null;
-    }
-
-    savedItem = buildSavedItemResponse(savedRecord, folderName);
-    assistantSavedItem = buildAssistantSavedItem(savedRecord, folderName);
-
-    if (savedRecord.type === "reminder") {
-      const reminderPart = parsedReminderDate !== null ? ` на ${formatMoscowDateTime(parsedReminderDate!)}` : "";
-      message = `Сохранил как напоминание «${savedRecord.title}»${folderName ? ` в папку «${folderName}»` : ""}${reminderPart}.`;
-    } else {
-      message = `Сохранил как заметку «${savedRecord.title}»${folderName ? ` в папку «${folderName}»` : ""}.`;
-    }
-  } else if (classification.responseMode === "suggest_actions") {
-    classification.intentType = "chat_only";
-    classification.type = "chat";
-    classification.shouldSave = false;
-    suggestedActions = ["save_note", "save_reminder", "ignore"];
-    message =
-      "Не стал автоматически сохранять это сообщение. Выберите, что сделать: сохранить как заметку, создать напоминание или оставить как обычный чат.";
-  } else {
-    classification.intentType = "chat_only";
-    classification.type = "chat";
-    classification.shouldSave = false;
-    classification.responseMode = "reply_only";
-    message = "Понял запрос. Отвечаю в чате без автоматического сохранения.";
-  }
-
-  const assistantContext: AssistantContext = {
-    intentType: classification.intentType,
-    responseMode: classification.responseMode,
-    autoSaved: classification.responseMode === "saved" && Boolean(savedItem),
-    assistantReply: message,
-    savedItem: assistantSavedItem,
-    suggestedActions: suggestedActions.length > 0 ? suggestedActions : undefined,
-  };
-
-  res.json({
-    type: classification.type,
-    intentType: classification.intentType,
-    responseMode: classification.responseMode,
-    shouldSave: classification.shouldSave,
-    title: classification.title,
-    summary: classification.summary,
-    cleanedContent: classification.cleanedContent,
-    suggestedFolder: classification.suggestedFolder,
-    tags: classification.tags,
-    confidence: classification.confidence,
-    reminderAt: classification.reminderAt,
-    savedItem,
-    suggestedActions: assistantContext?.suggestedActions ?? [],
-    assistantContext,
-    message,
+router.post("/gemini/classify", requireAuth, async (_req, res): Promise<void> => {
+  res.status(410).json({
+    error: "Отдельная классификация отключена. Отправляйте сообщение через endpoint диалога.",
   });
 });
-
 export default router;

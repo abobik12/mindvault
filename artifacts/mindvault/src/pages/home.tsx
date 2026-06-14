@@ -1,7 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useLocation } from "wouter";
 import {
-  useClassifyContent,
   useGetGeminiConversation,
   getGetGeminiConversationQueryKey,
   useUploadFile,
@@ -170,9 +169,21 @@ type ActionResult = {
 const MAX_CHAT_ATTACHMENT_SIZE = 20 * 1024 * 1024;
 
 function getSectionPathByItemType(type: ItemType): string {
-  if (type === "note" || type === "list") return "/notes";
+  if (type === "note") return "/notes";
+  if (type === "list") return "/lists";
   if (type === "reminder") return "/reminders";
   return "/files";
+}
+
+function isMutatingAssistantAction(action: string): boolean {
+  return (
+    action.startsWith("create_") ||
+    action.startsWith("update_") ||
+    action.startsWith("delete_") ||
+    action === "move_item_to_folder" ||
+    action === "rename_folder" ||
+    action === "clear_chat"
+  );
 }
 
 function buildTitleFromText(text: string, fallback: string): string {
@@ -522,7 +533,6 @@ export default function Home() {
   );
   const userFolders = useMemo(() => folders.filter((folder) => !folder.isSystem), [folders]);
 
-  const classifyContent = useClassifyContent();
   const uploadFile = useUploadFile();
   const createItem = useCreateItem({
     mutation: {
@@ -1223,56 +1233,9 @@ export default function Home() {
     });
     window.requestAnimationFrame(() => scrollToBottom(false));
 
-    let assistantContextForMessage: AssistantMessageContext | null = null;
-
-    try {
-      const classification = (await classifyContent.mutateAsync({
-        data: {
-          content: messageContent,
-          conversationId: activeConversationId,
-          folderId:
-            saveFolderContext === "auto"
-              ? undefined
-              : saveFolderContext === "none"
-              ? null
-              : Number.parseInt(saveFolderContext, 10),
-        },
-      })) as any;
-
-      assistantContextForMessage = readAssistantContext(classification?.assistantContext);
-      if (assistantContextForMessage && typeof classification?.message === "string" && classification.message.trim()) {
-        assistantContextForMessage = {
-          ...assistantContextForMessage,
-          assistantReply: classification.message,
-        };
-      }
-
-      if (classification?.responseMode === "saved" && classification?.savedItem?.title) {
-        const savedType = classification.savedItem.type;
-        if (savedType === "reminder") {
-          toast.success(`Создано напоминание: «${classification.savedItem.title}»`);
-        } else if (savedType === "note") {
-          toast.success(`Сохранена заметка: «${classification.savedItem.title}»`);
-        } else if (savedType === "list") {
-          toast.success(`Создан список: «${classification.savedItem.title}»`);
-        }
-        queryClient.invalidateQueries({ queryKey: getListItemsQueryKey() });
-        queryClient.invalidateQueries({ queryKey: getListFoldersQueryKey() });
-      } else if (
-        classification?.responseMode === "action_executed" &&
-        typeof classification?.message === "string" &&
-        classification.message.trim()
-      ) {
-        toast.success(classification.message);
-        queryClient.invalidateQueries({ queryKey: getListItemsQueryKey() });
-        queryClient.invalidateQueries({ queryKey: getListFoldersQueryKey() });
-      }
-    } catch {
-      assistantContextForMessage = null;
-    }
-
     setIsStreaming(true);
     setStreamingMessage("");
+    let serverAssistantContext: AssistantMessageContext | null = null;
 
     try {
       const token = localStorage.getItem("mindvault_token");
@@ -1284,8 +1247,11 @@ export default function Home() {
         },
         body: JSON.stringify({
           content: messageContent,
-          assistantContext: assistantContextForMessage,
           attachments,
+          folderId:
+            saveFolderContext === "auto" || saveFolderContext === "none"
+              ? null
+              : Number.parseInt(saveFolderContext, 10),
         }),
       });
 
@@ -1328,8 +1294,46 @@ export default function Home() {
             } else if (typeof parsed.text === "string") {
               setStreamingMessage((prev) => prev + parsed.text);
             }
+
+            const parsedAssistantContext = readAssistantContext(parsed.assistantContext);
+            if (parsedAssistantContext) {
+              serverAssistantContext = parsedAssistantContext;
+            }
           }
         }
+      }
+
+      if (
+        serverAssistantContext?.actionResult?.success &&
+        serverAssistantContext.responseMode === "saved" &&
+        serverAssistantContext.savedItem
+      ) {
+        const savedItem = serverAssistantContext.savedItem;
+        if (savedItem.type === "reminder") {
+          toast.success(`Создано напоминание: «${savedItem.title}»`);
+        } else if (savedItem.type === "note") {
+          toast.success(`Сохранена заметка: «${savedItem.title}»`);
+        } else if (savedItem.type === "list") {
+          toast.success(`Создан список: «${savedItem.title}»`);
+        }
+        queryClient.invalidateQueries({ queryKey: getListItemsQueryKey() });
+        queryClient.invalidateQueries({ queryKey: getListFoldersQueryKey() });
+      } else if (
+        serverAssistantContext?.actionResult?.success &&
+        serverAssistantContext.responseMode === "action_executed" &&
+        isMutatingAssistantAction(serverAssistantContext.actionResult.action)
+      ) {
+        if (serverAssistantContext.assistantReply) {
+          toast.success(serverAssistantContext.assistantReply);
+        }
+        queryClient.invalidateQueries({ queryKey: getListItemsQueryKey() });
+        queryClient.invalidateQueries({ queryKey: getListFoldersQueryKey() });
+      } else if (
+        serverAssistantContext?.actionResult &&
+        !serverAssistantContext.actionResult.success &&
+        serverAssistantContext.actionResult.error === "execution_failed"
+      ) {
+        toast.error(serverAssistantContext.assistantReply || "Действие не выполнено");
       }
 
       queryClient.invalidateQueries({ queryKey: getGetGeminiConversationQueryKey(activeConversationId) });

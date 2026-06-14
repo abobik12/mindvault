@@ -39,14 +39,58 @@ function capitalizeTitle(value: string): string {
 }
 
 export function getKeywordCommand(message: string): KeywordCommand | null {
-  const match = /^\s*(заметка|напоминание|список)(?=\s|[:：-]|$)[\s:：-]*/i.exec(message);
-  if (!match) return null;
+  const source = message.trim();
+  if (!source || isLikelyQuestion(source)) return null;
 
-  const keyword = match[1].toLowerCase();
-  const text = message.slice(match[0].length).trim();
-  if (keyword === "заметка") return { kind: "note", text };
-  if (keyword === "напоминание") return { kind: "reminder", text };
-  return { kind: "list", text };
+  const commandPatterns: Array<{
+    kind: KeywordCommand["kind"];
+    pattern: RegExp;
+  }> = [
+    {
+      kind: "note",
+      pattern: /^(?:создай|сделай|сохрани|добавь)\s+(?:новую\s+)?заметку(?=\s|[:：-]|$)[\s:：-]*/i,
+    },
+    {
+      kind: "note",
+      pattern: /^запиши(?:\s+(?:как\s+)?заметку)?(?=\s|[:：-]|$)[\s:：-]*/i,
+    },
+    {
+      kind: "note",
+      pattern: /^заметка(?=\s|[:：-]|$)[\s:：-]*/i,
+    },
+    {
+      kind: "reminder",
+      pattern: /^(?:создай|сделай|добавь|поставь|установи)\s+(?:новое\s+)?напоминание(?=\s|[:：-]|$)[\s:：-]*/i,
+    },
+    {
+      kind: "reminder",
+      pattern: /^напомни(?:\s+мне)?(?=\s|[:：-]|$)[\s:：-]*/i,
+    },
+    {
+      kind: "reminder",
+      pattern: /^напоминание(?=\s|[:：-]|$)[\s:：-]*/i,
+    },
+    {
+      kind: "list",
+      pattern: /^(?:создай|сделай|сохрани|добавь)\s+(?:новый\s+)?(?:список|чеклист)(?=\s|[:：-]|$)[\s:：-]*/i,
+    },
+    {
+      kind: "list",
+      pattern: /^(?:список|чеклист)(?=\s|[:：-]|$)[\s:：-]*/i,
+    },
+  ];
+
+  for (const command of commandPatterns) {
+    const match = command.pattern.exec(source);
+    if (match) {
+      return {
+        kind: command.kind,
+        text: source.slice(match[0].length).trim(),
+      } as KeywordCommand;
+    }
+  }
+
+  return null;
 }
 
 export function isLikelyQuestion(message: string): boolean {
@@ -66,7 +110,10 @@ export function parseListCommand(text: string): ParsedList | null {
   let itemsSource = source;
 
   if (colonIndex > 0) {
-    title = capitalizeTitle(titleFromText(source.slice(0, colonIndex), "Список"));
+    const rawTitle = compact(source.slice(0, colonIndex));
+    title = /^дел$/i.test(rawTitle)
+      ? "Список дел"
+      : capitalizeTitle(titleFromText(rawTitle, "Список"));
     itemsSource = source.slice(colonIndex + 1);
   } else if (/^купить(?=\s|$)/i.test(source)) {
     title = "Покупки";
@@ -143,6 +190,8 @@ function moscowLocalDate(dayOffset = 0, hour = 9, minute = 0): Date {
 }
 
 function moscowDateFromParts(day: number, month: number, year: number | null, hour = DEFAULT_REMINDER_HOUR, minute = DEFAULT_REMINDER_MINUTE): Date | null {
+  if (hour < 0 || hour > 23 || minute < 0 || minute > 59) return null;
+
   const now = getMoscowParts();
   let targetYear = year ?? now.year;
 
@@ -171,6 +220,10 @@ function moscowDateFromParts(day: number, month: number, year: number | null, ho
   return result;
 }
 
+function cleanReminderText(value: string): string {
+  return compact(value).replace(/^на\s+/i, "");
+}
+
 export function parseReminderCommand(text: string): ParsedReminder {
   let rest = ` ${text} `;
   const normalized = normalizeText(text);
@@ -183,7 +236,7 @@ export function parseReminderCommand(text: string): ParsedReminder {
       reminderAt: new Date(Date.now() + hours * 60 * 60 * 1000),
       hasDate: true,
       hasTime: true,
-      text: compact(rest),
+      text: cleanReminderText(rest),
     };
   }
 
@@ -191,6 +244,7 @@ export function parseReminderCommand(text: string): ParsedReminder {
   const hasTime = Boolean(explicitTime);
   const hour = explicitTime ? Number(explicitTime[1]) : DEFAULT_REMINDER_HOUR;
   const minute = explicitTime?.[2] ? Number(explicitTime[2]) : DEFAULT_REMINDER_MINUTE;
+  const hasValidTime = hour >= 0 && hour <= 23 && minute >= 0 && minute <= 59;
 
   const relativeDays = /через\s+(\d+|один|одну|два|две)\s+д(?:ень|ня|ней)/i.exec(normalized);
   let dayOffset: number | null = null;
@@ -205,10 +259,10 @@ export function parseReminderCommand(text: string): ParsedReminder {
       .replace(/через\s+(\d+|один|одну|два|две)\s+д(?:ень|ня|ней)/gi, " ");
     if (explicitTime) rest = rest.replace(/(?:^|\s)в\s*\d{1,2}(?::|\.?)\d{0,2}\b/i, " ");
     return {
-      reminderAt: moscowLocalDate(dayOffset, hour, minute),
+      reminderAt: hasValidTime ? moscowLocalDate(dayOffset, hour, minute) : null,
       hasDate: true,
       hasTime,
-      text: compact(rest),
+      text: cleanReminderText(rest),
     };
   }
 
@@ -230,10 +284,10 @@ export function parseReminderCommand(text: string): ParsedReminder {
     rest = rest.replace(new RegExp(`в?\\s*${weekday.key}`, "i"), " ");
     if (explicitTime) rest = rest.replace(/(?:^|\s)в\s*\d{1,2}(?::|\.?)\d{0,2}\b/i, " ");
     return {
-      reminderAt: moscowLocalDate(offset, hour, minute),
+      reminderAt: hasValidTime ? moscowLocalDate(offset, hour, minute) : null,
       hasDate: true,
       hasTime,
-      text: compact(rest),
+      text: cleanReminderText(rest),
     };
   }
 
@@ -277,7 +331,7 @@ export function parseReminderCommand(text: string): ParsedReminder {
         reminderAt,
         hasDate: true,
         hasTime,
-        text: compact(rest),
+        text: cleanReminderText(rest),
       };
     }
   }
@@ -296,7 +350,7 @@ export function parseReminderCommand(text: string): ParsedReminder {
         reminderAt,
         hasDate: true,
         hasTime,
-        text: compact(rest),
+        text: cleanReminderText(rest),
       };
     }
   }
@@ -306,7 +360,7 @@ export function parseReminderCommand(text: string): ParsedReminder {
     reminderAt: null,
     hasDate: false,
     hasTime,
-    text: compact(rest),
+    text: cleanReminderText(rest),
   };
 }
 

@@ -15,6 +15,7 @@ import {
   titleFromText,
   type KeywordCommand,
 } from "./command-parser";
+import type { AssistantIntent } from "./assistant-intent";
 
 export type AssistantActionIntent =
   | "chat_general"
@@ -104,7 +105,19 @@ type PendingAction =
     };
 
 type ItemRecord = typeof itemsTable.$inferSelect;
+type ItemInsert = typeof itemsTable.$inferInsert;
 type FolderRecord = typeof foldersTable.$inferSelect;
+type ActionPersistence = {
+  insertItem(values: ItemInsert): Promise<ItemRecord>;
+};
+
+const databasePersistence: ActionPersistence = {
+  async insertItem(values) {
+    const [item] = await db.insert(itemsTable).values(values).returning();
+    if (!item) throw new Error("Item insert did not return a record");
+    return item;
+  },
+};
 
 const NOTE_WORD_RE = /(заметк|запис|иде[яюи])/i;
 const FILE_WORD_RE = /(файл|документ|вложен|презентац|pdf|docx|pptx|txt|md|csv)/i;
@@ -150,6 +163,23 @@ function baseResponse(intentType: AssistantActionIntent, message: string): Assis
   };
 }
 
+function failureResponse(
+  intentType: AssistantActionIntent,
+  message: string,
+  error = "not_executed",
+): AssistantActionResponse {
+  return {
+    ...baseResponse(intentType, message),
+    assistantContext: {
+      intentType,
+      responseMode: "action_executed",
+      assistantReply: message,
+      savedItem: null,
+      actionResult: { success: false, action: intentType, error },
+    },
+  };
+}
+
 function chatResponse(): AssistantActionResponse {
   return {
     ...baseResponse("chat_general", "Понял запрос. Отвечаю в чате без автоматического сохранения."),
@@ -192,29 +222,28 @@ async function createReminderItem({
   reminderAt,
   folder,
   folders,
+  persistence = databasePersistence,
 }: {
   userId: number;
   text: string;
   reminderAt: Date;
   folder: FolderRecord | null;
   folders: FolderRecord[];
+  persistence?: ActionPersistence;
 }): Promise<AssistantActionResponse> {
   const reminderText = compact(text);
-  if (!reminderText) return baseResponse("unknown_or_ambiguous", "Уточните текст напоминания.");
+  if (!reminderText) return failureResponse("unknown_or_ambiguous", "Уточните текст напоминания.", "clarification_required");
 
-  const [item] = await db
-    .insert(itemsTable)
-    .values({
-      userId,
-      type: "reminder",
-      title: titleFromText(reminderText, "Новое напоминание"),
-      content: reminderText,
-      folderId: folder?.id ?? null,
-      reminderAt,
-      status: "active",
-      aiTags: [],
-    })
-    .returning();
+  const item = await persistence.insertItem({
+    userId,
+    type: "reminder",
+    title: titleFromText(reminderText, "Новое напоминание"),
+    content: reminderText,
+    folderId: folder?.id ?? null,
+    reminderAt,
+    status: "active",
+    aiTags: [],
+  });
 
   const savedItem = savedItemFromRecord(item, folders);
   const message = `Создал напоминание «${item.title}» на ${formatMoscowDateTime(reminderAt)}.`;
@@ -406,6 +435,17 @@ function findFolder(folders: FolderRecord[], name: string | null): FolderRecord 
   );
 }
 
+function findSystemFolder(folders: FolderRecord[], names: string[]): FolderRecord | null {
+  const normalizedNames = names.map(normalizeText);
+  return (
+    folders.find(
+      (folder) =>
+        folder.isSystem &&
+        normalizedNames.includes(normalizeText(folder.name)),
+    ) ?? null
+  );
+}
+
 function searchItems(items: ItemRecord[], query: string, type?: AssistantItemType): ItemRecord[] {
   const normalized = normalizeText(query);
   const terms = normalized.split(/[^\p{L}\p{N}_-]+/u).filter((term) => term.length > 2);
@@ -435,6 +475,15 @@ function searchItems(items: ItemRecord[], query: string, type?: AssistantItemTyp
     .slice(0, 10);
 }
 
+function extractSearchQuery(message: string): string {
+  return compact(
+    message
+      .replace(/^(?:найди|покажи|перечисли|какие|что\s+у\s+меня\s+сохранено|что\s+я\s+сохранял)\s*/i, "")
+      .replace(/\b(?:заметки?|записи?|файлы?|документы?|напоминания?|списки?|чеклисты?|материалы?)\b/gi, " ")
+      .replace(/^(?:по|про|о)\s+/i, ""),
+  );
+}
+
 function listItemsMessage(title: string, items: ItemRecord[], folders: FolderRecord[]): string {
   if (items.length === 0) return `${title}: ничего не найдено.`;
   return [
@@ -461,8 +510,14 @@ async function getLatestPendingAction(conversationId: number | null | undefined)
     .orderBy(desc(messages.createdAt))
     .limit(6);
 
+  let newerUserMessages = 0;
   for (const row of rows) {
-    if (row.role !== "assistant") continue;
+    if (row.role === "user") {
+      newerUserMessages += 1;
+      if (newerUserMessages > 1) return null;
+      continue;
+    }
+    if (row.role !== "assistant") return null;
     if (!row.metadata || typeof row.metadata !== "object") return null;
     const pendingAction = (row.metadata as Record<string, unknown>).pendingAction;
     if (pendingAction && typeof pendingAction === "object" && "action" in pendingAction) {
@@ -485,7 +540,7 @@ async function executePendingAction(userId: number, action: PendingAction, folde
 
     const reminderAt = new Date(action.reminderAt);
     if (Number.isNaN(reminderAt.getTime())) {
-      return baseResponse("create_reminder", "Не удалось создать напоминание: дата распознана некорректно.");
+      return failureResponse("create_reminder", "Не удалось создать напоминание: дата распознана некорректно.", "invalid_date");
     }
 
     return createReminderItem({
@@ -572,7 +627,7 @@ async function continuePendingReminderAction({
   const folder = folderId ? folders.find((entry) => entry.id === folderId) ?? null : null;
 
   if (CANCEL_RE.test(normalized)) {
-    return baseResponse("unknown_or_ambiguous", "Ок, создание напоминания отменено.");
+    return failureResponse("unknown_or_ambiguous", "Ок, создание напоминания отменено.", "cancelled");
   }
 
   if (CONFIRM_RE.test(normalized)) {
@@ -586,7 +641,7 @@ async function continuePendingReminderAction({
 
     const reminderAt = new Date(action.reminderAt);
     if (Number.isNaN(reminderAt.getTime())) {
-      return baseResponse("create_reminder", "Не удалось создать напоминание: дата распознана некорректно.");
+      return failureResponse("create_reminder", "Не удалось создать напоминание: дата распознана некорректно.", "invalid_date");
     }
 
     return createReminderItem({ userId, text: action.text, reminderAt, folder, folders });
@@ -665,35 +720,35 @@ function withSuggestedActions(
   };
 }
 
-async function executeKeywordCommand({
+export async function executeKeywordCommand({
   command,
   userId,
   folders,
   folderId,
+  persistence = databasePersistence,
 }: {
   command: KeywordCommand;
   userId: number;
   folders: FolderRecord[];
   folderId?: number | null;
+  persistence?: ActionPersistence;
 }): Promise<AssistantActionResponse> {
-  const folder = folderId ? folders.find((entry) => entry.id === folderId) ?? null : null;
+  const explicitFolder = folderId ? folders.find((entry) => entry.id === folderId) ?? null : null;
 
   if (command.kind === "note") {
+    const folder = explicitFolder ?? findSystemFolder(folders, ["Заметки", "Notes"]);
     const text = compact(command.text);
-    if (!text) return baseResponse("unknown_or_ambiguous", "Введите текст заметки после слова «заметка».");
+    if (!text) return failureResponse("unknown_or_ambiguous", "Введите текст заметки после слова «заметка».", "clarification_required");
 
-    const [item] = await db
-      .insert(itemsTable)
-      .values({
-        userId,
-        type: "note",
-        title: titleFromText(text, "Новая заметка"),
-        content: text,
-        folderId: folder?.id ?? null,
-        status: "active",
-        aiTags: [],
-      })
-      .returning();
+    const item = await persistence.insertItem({
+      userId,
+      type: "note",
+      title: titleFromText(text, "Новая заметка"),
+      content: text,
+      folderId: folder?.id ?? null,
+      status: "active",
+      aiTags: [],
+    });
 
     const savedItem = savedItemFromRecord(item, folders);
     const message = `Заметка сохранена: ${text}`;
@@ -717,8 +772,9 @@ async function executeKeywordCommand({
   }
 
   if (command.kind === "reminder") {
+    const folder = explicitFolder ?? findSystemFolder(folders, ["Напоминания", "Reminders"]);
     const text = compact(command.text);
-    if (!text) return baseResponse("unknown_or_ambiguous", "Введите текст напоминания после слова «напоминание».");
+    if (!text) return failureResponse("unknown_or_ambiguous", "Введите текст напоминания после слова «напоминание».", "clarification_required");
 
     const parsed = parseReminderCommand(text);
     if (!parsed.hasDate || !parsed.reminderAt) {
@@ -729,28 +785,33 @@ async function executeKeywordCommand({
         { action: "create_reminder", text: pendingText, reminderAt: null },
       );
     }
-    if (!parsed.text) return baseResponse("unknown_or_ambiguous", "Уточните текст напоминания.");
+    if (!parsed.text) return failureResponse("unknown_or_ambiguous", "Уточните текст напоминания.", "clarification_required");
 
     const reminderText = parsed.text;
-    return createReminderItem({ userId, text: reminderText, reminderAt: parsed.reminderAt, folder, folders });
+    return createReminderItem({
+      userId,
+      text: reminderText,
+      reminderAt: parsed.reminderAt,
+      folder,
+      folders,
+      persistence,
+    });
   }
 
   const parsed = parseListCommand(command.text);
-  if (!parsed) return baseResponse("unknown_or_ambiguous", "Введите пункты списка после слова «список».");
+  if (!parsed) return failureResponse("unknown_or_ambiguous", "Введите пункты списка после слова «список».", "clarification_required");
 
+  const folder = explicitFolder ?? findSystemFolder(folders, ["Входящие", "Inbox"]);
   const content = serializeListContent(parsed.items);
-  const [item] = await db
-    .insert(itemsTable)
-    .values({
-      userId,
-      type: "list",
-      title: parsed.title,
-      content,
-      folderId: folder?.id ?? null,
-      status: "active",
-      aiTags: [],
-    })
-    .returning();
+  const item = await persistence.insertItem({
+    userId,
+    type: "list",
+    title: parsed.title,
+    content,
+    folderId: folder?.id ?? null,
+    status: "active",
+    aiTags: [],
+  });
 
   const savedItem = savedItemFromRecord(item, folders);
   const message = [`Список создан: ${parsed.title}`, ...parsed.items.map((entry) => `- ${entry}`)].join("\n");
@@ -771,6 +832,272 @@ async function executeKeywordCommand({
       actionResult: { success: true, action: "create_list" },
     },
   };
+}
+
+export async function executeValidatedAssistantIntent({
+  intent,
+  userId,
+  folderId,
+  folders: providedFolders,
+  items: providedItems,
+  persistence = databasePersistence,
+}: {
+  intent: AssistantIntent;
+  userId: number;
+  folderId?: number | null;
+  folders?: FolderRecord[];
+  items?: ItemRecord[];
+  persistence?: ActionPersistence;
+}): Promise<AssistantActionResponse> {
+  if (intent.intent === "clarify") {
+    return failureResponse(
+      "unknown_or_ambiguous",
+      intent.data.question,
+      "clarification_required",
+    );
+  }
+
+  if (intent.confidence < 0.82) {
+    return failureResponse(
+      "unknown_or_ambiguous",
+      "Я не уверен, что правильно понял действие. Уточните, что именно нужно сделать.",
+      "low_confidence",
+    );
+  }
+
+  if (intent.intent === "chat_general") return chatResponse();
+
+  if (
+    intent.needsConfirmation ||
+    intent.intent === "delete_item" ||
+    intent.intent === "move_item_to_folder" ||
+    intent.intent === "rename_folder"
+  ) {
+    return failureResponse(
+      "unknown_or_ambiguous",
+      "Это действие может изменить или удалить существующие данные. Подтвердите его более точной командой.",
+      "confirmation_required",
+    );
+  }
+
+  const folders =
+    providedFolders ??
+    (await db.select().from(foldersTable).where(eq(foldersTable.userId, userId)));
+  const explicitFolder = folderId
+    ? folders.find((entry) => entry.id === folderId) ?? null
+    : null;
+  const resolveFolder = (
+    requestedName: string | null | undefined,
+    systemNames: string[],
+  ): FolderRecord | null | undefined => {
+    if (requestedName) return findFolder(folders, requestedName) ?? undefined;
+    return explicitFolder ?? findSystemFolder(folders, systemNames);
+  };
+
+  if (intent.intent === "create_note") {
+    const folder = resolveFolder(intent.data.folderName, ["Заметки", "Notes"]);
+    if (intent.data.folderName && folder === undefined) {
+      return failureResponse(
+        "create_note",
+        `Я не нашёл папку «${intent.data.folderName}». Уточните папку или создайте её.`,
+        "folder_not_found",
+      );
+    }
+
+    const item = await persistence.insertItem({
+      userId,
+      type: "note",
+      title: intent.data.title,
+      content: intent.data.content,
+      folderId: folder?.id ?? null,
+      status: "active",
+      aiTags: [],
+    });
+    const savedItem = savedItemFromRecord(item, folders);
+    const message = `Заметка сохранена: ${item.title}`;
+    return {
+      ...baseResponse("create_note", message),
+      type: "note",
+      responseMode: "saved",
+      shouldSave: true,
+      title: item.title,
+      cleanedContent: item.content,
+      savedItem: itemResponse(item, folders),
+      assistantContext: {
+        intentType: "create_note",
+        responseMode: "saved",
+        autoSaved: false,
+        assistantReply: message,
+        savedItem,
+        actionResult: { success: true, action: "create_note" },
+      },
+    };
+  }
+
+  if (intent.intent === "create_list") {
+    const folder = resolveFolder(intent.data.folderName, ["Входящие", "Inbox"]);
+    if (intent.data.folderName && folder === undefined) {
+      return failureResponse(
+        "create_list",
+        `Я не нашёл папку «${intent.data.folderName}». Уточните папку или создайте её.`,
+        "folder_not_found",
+      );
+    }
+
+    const content = serializeListContent(intent.data.items);
+    const item = await persistence.insertItem({
+      userId,
+      type: "list",
+      title: intent.data.title,
+      content,
+      folderId: folder?.id ?? null,
+      status: "active",
+      aiTags: [],
+    });
+    const savedItem = savedItemFromRecord(item, folders);
+    const message = [
+      `Список создан: ${item.title}`,
+      ...intent.data.items.map((entry) => `- ${entry}`),
+    ].join("\n");
+    return {
+      ...baseResponse("create_list", message),
+      type: "list",
+      responseMode: "saved",
+      shouldSave: true,
+      title: item.title,
+      cleanedContent: content,
+      savedItem: itemResponse(item, folders),
+      assistantContext: {
+        intentType: "create_list",
+        responseMode: "saved",
+        autoSaved: false,
+        assistantReply: message,
+        savedItem,
+        actionResult: { success: true, action: "create_list" },
+      },
+    };
+  }
+
+  if (intent.intent === "create_reminder") {
+    const folder = resolveFolder(intent.data.folderName, [
+      "Напоминания",
+      "Reminders",
+    ]);
+    if (intent.data.folderName && folder === undefined) {
+      return failureResponse(
+        "create_reminder",
+        `Я не нашёл папку «${intent.data.folderName}». Уточните папку или создайте её.`,
+        "folder_not_found",
+      );
+    }
+
+    const reminderAt = parseReminderDateTime(
+      `${intent.data.date}T${intent.data.time}`,
+    );
+    if (!reminderAt || reminderAt.getTime() <= Date.now()) {
+      return failureResponse(
+        "create_reminder",
+        "Дата напоминания должна быть корректной и находиться в будущем.",
+        "invalid_date",
+      );
+    }
+
+    const text = intent.data.content || intent.data.title;
+    const item = await persistence.insertItem({
+      userId,
+      type: "reminder",
+      title: intent.data.title,
+      content: text,
+      folderId: folder?.id ?? null,
+      reminderAt,
+      status: "active",
+      aiTags: [],
+    });
+    const savedItem = savedItemFromRecord(item, folders);
+    const message = `Создал напоминание «${item.title}» на ${formatMoscowDateTime(reminderAt)}.`;
+    return {
+      ...baseResponse("create_reminder", message),
+      type: "reminder",
+      responseMode: "saved",
+      shouldSave: true,
+      title: item.title,
+      cleanedContent: text,
+      reminderAt: reminderAt.toISOString(),
+      savedItem: itemResponse(item, folders),
+      assistantContext: {
+        intentType: "create_reminder",
+        responseMode: "saved",
+        autoSaved: false,
+        assistantReply: message,
+        savedItem,
+        actionResult: { success: true, action: "create_reminder" },
+      },
+    };
+  }
+
+  if (intent.intent === "create_folder") {
+    const existing = findFolder(folders, intent.data.name);
+    if (existing) {
+      return failureResponse(
+        "create_folder",
+        `Папка «${existing.name}» уже есть.`,
+        "already_exists",
+      );
+    }
+    const [folder] = await db
+      .insert(foldersTable)
+      .values({ userId, name: intent.data.name, isSystem: false })
+      .returning();
+    if (!folder) throw new Error("Folder insert did not return a record");
+    return baseResponse(
+      "create_folder",
+      `Готово: создал папку «${folder.name}».`,
+    );
+  }
+
+  if (intent.intent === "search_items") {
+    const items =
+      providedItems ??
+      (await db
+        .select()
+        .from(itemsTable)
+        .where(
+          and(eq(itemsTable.userId, userId), eq(itemsTable.status, "active")),
+        )
+        .orderBy(desc(itemsTable.updatedAt))
+        .limit(1000));
+    const requestedTypes = intent.data.types;
+    const itemTypes = requestedTypes?.filter(
+      (type): type is AssistantItemType => type !== "folder",
+    ) ?? [];
+    const matches = searchItems(items, intent.data.query).filter(
+      (item) => !itemTypes || itemTypes.length === 0 || itemTypes.includes(item.type),
+    );
+    const sections: string[] = [];
+    if (!requestedTypes || itemTypes.length > 0) {
+      sections.push(
+        listItemsMessage("Найденные материалы", matches, folders),
+      );
+    }
+    if (requestedTypes?.includes("folder")) {
+      const query = normalizeText(intent.data.query);
+      const folderMatches = folders.filter((folder) =>
+        normalizeText(folder.name).includes(query),
+      );
+      sections.push(
+        folderMatches.length > 0
+          ? ["Найденные папки:", ...folderMatches.map((folder, index) => `${index + 1}. ${folder.name}`)].join("\n")
+          : "Найденные папки: ничего не найдено.",
+      );
+    }
+    return baseResponse("search_user_content", sections.join("\n\n"));
+  }
+
+  return failureResponse(
+    "unknown_or_ambiguous",
+    "Уточните действие, которое нужно выполнить.",
+    "clarification_required",
+  );
 }
 
 export async function classifyAndExecuteAssistantAction({
@@ -806,7 +1133,7 @@ export async function classifyAndExecuteAssistantAction({
   }
   if (pending && CANCEL_RE.test(normalized)) {
     logger.info({ ...logBase, intent: pending.action }, "[assistant] pending action cancelled");
-    return baseResponse("unknown_or_ambiguous", "Ок, действие отменено.");
+    return failureResponse("unknown_or_ambiguous", "Ок, действие отменено.", "cancelled");
   }
 
   const keywordCommand = getKeywordCommand(content);
@@ -830,7 +1157,7 @@ export async function classifyAndExecuteAssistantAction({
   }
 
   if (/очисти\s+(чат|историю)|удали\s+историю\s+чата/i.test(normalized)) {
-    if (!conversationId) return baseResponse("clear_chat", "Не удалось очистить чат: текущий чат не найден.");
+    if (!conversationId) return failureResponse("clear_chat", "Не удалось очистить чат: текущий чат не найден.", "not_found");
     return withPending(
       "clear_chat",
       "Очистить историю чата? Это удалит только сообщения, заметки/файлы/папки/напоминания останутся. Ответьте «да», чтобы подтвердить.",
@@ -839,20 +1166,21 @@ export async function classifyAndExecuteAssistantAction({
   }
 
   if (SEARCH_RE.test(normalized)) {
+    const query = extractSearchQuery(content);
     if (NOTE_WORD_RE.test(normalized)) {
-      const notes = items.filter((item) => item.type === "note");
+      const notes = query ? searchItems(items, query, "note") : items.filter((item) => item.type === "note");
       return baseResponse("search_user_content", listItemsMessage("Ваши заметки", notes, folders));
     }
     if (FILE_WORD_RE.test(normalized)) {
-      const files = items.filter((item) => item.type === "file");
+      const files = query ? searchItems(items, query, "file") : items.filter((item) => item.type === "file");
       return baseResponse("search_files", listItemsMessage("Ваши файлы", files, folders));
     }
     if (REMINDER_WORD_RE.test(normalized)) {
-      const reminders = items.filter((item) => item.type === "reminder");
+      const reminders = query ? searchItems(items, query, "reminder") : items.filter((item) => item.type === "reminder");
       return baseResponse("search_reminders", listItemsMessage("Ваши напоминания", reminders, folders));
     }
     if (LIST_WORD_RE.test(normalized)) {
-      const lists = items.filter((item) => item.type === "list");
+      const lists = query ? searchItems(items, query, "list") : items.filter((item) => item.type === "list");
       return baseResponse("search_user_content", listItemsMessage("Ваши списки", lists, folders));
     }
     if (FOLDER_WORD_RE.test(normalized)) {
@@ -862,13 +1190,16 @@ export async function classifyAndExecuteAssistantAction({
           : ["Ваши папки:", ...folders.map((folder, index) => `${index + 1}. ${folder.name}`)].join("\n");
       return baseResponse("search_user_content", message);
     }
+
+    const matches = searchItems(items, query);
+    return baseResponse("search_user_content", listItemsMessage("Найденные материалы", matches, folders));
   }
 
   if (/создай\s+папк|добавь\s+папк/i.test(normalized)) {
     const folderName = extractTarget(content, "folder") || compact(content.replace(/создай|добавь|папк[ауи]?/gi, ""));
-    if (!folderName) return baseResponse("unknown_or_ambiguous", "Как назвать новую папку?");
+    if (!folderName) return failureResponse("unknown_or_ambiguous", "Как назвать новую папку?", "clarification_required");
     const existing = findFolder(folders, folderName);
-    if (existing) return baseResponse("create_folder", `Папка «${existing.name}» уже есть.`);
+    if (existing) return failureResponse("create_folder", `Папка «${existing.name}» уже есть.`, "already_exists");
     const [folder] = await db.insert(foldersTable).values({ userId, name: folderName, isSystem: false }).returning();
     logger.info({ ...logBase, intent: "create_folder", folderId: folder.id }, "[assistant] action success");
     return baseResponse("create_folder", `Готово: создал папку «${folder.name}».`);
@@ -878,9 +1209,9 @@ export async function classifyAndExecuteAssistantAction({
     const oldName = extractBetween(content, /папк[ауи]?\s+/i, /\s+(?:в|на)\s+/i);
     const newName = /(?:в|на)\s+["«]?([^"».,!?]+)["»]?/i.exec(content)?.[1];
     const folder = findFolder(folders, oldName);
-    if (!folder) return baseResponse("rename_folder", `Я не нашел папку${oldName ? ` «${oldName}»` : ""}.`);
-    if (folder.isSystem) return baseResponse("rename_folder", "Системные папки нельзя переименовывать.");
-    if (!newName) return baseResponse("rename_folder", `Как назвать папку «${folder.name}»?`);
+    if (!folder) return failureResponse("rename_folder", `Я не нашел папку${oldName ? ` «${oldName}»` : ""}.`, "not_found");
+    if (folder.isSystem) return failureResponse("rename_folder", "Системные папки нельзя переименовывать.", "system_folder");
+    if (!newName) return failureResponse("rename_folder", `Как назвать папку «${folder.name}»?`, "clarification_required");
     const [updated] = await db.update(foldersTable).set({ name: compact(newName) }).where(and(eq(foldersTable.id, folder.id), eq(foldersTable.userId, userId))).returning();
     return baseResponse("rename_folder", `Готово: переименовал папку «${folder.name}» в «${updated.name}».`);
   }
@@ -888,8 +1219,8 @@ export async function classifyAndExecuteAssistantAction({
   if (DELETE_RE.test(normalized) && FOLDER_WORD_RE.test(normalized)) {
     const target = extractTarget(content, "folder");
     const folder = findFolder(folders, target);
-    if (!folder) return baseResponse("delete_folder", `Я не нашел папку${target ? ` «${target}»` : ""}.`);
-    if (folder.isSystem) return baseResponse("delete_folder", "Системные папки нельзя удалять.");
+    if (!folder) return failureResponse("delete_folder", `Я не нашел папку${target ? ` «${target}»` : ""}.`, "not_found");
+    if (folder.isSystem) return failureResponse("delete_folder", "Системные папки нельзя удалять.", "system_folder");
     return withPending(
       "delete_folder",
       `Удалить папку «${folder.name}»? Материалы из неё останутся без папки. Ответьте «да», чтобы подтвердить.`,
@@ -943,7 +1274,7 @@ export async function classifyAndExecuteAssistantAction({
     const folder = findFolder(folders, extractFolderName(content)) ?? (folderId ? folders.find((entry) => entry.id === folderId) ?? null : null);
     const text = stripFolderMention(removeDateWords(extractCreateContent(content, content)).replace(/^(напомни|не\s+забыть)\s*/i, ""));
     if (!remindAt && CREATE_REMINDER_RE.test(normalized)) {
-      return baseResponse("unknown_or_ambiguous", "Когда поставить напоминание? Укажите дату и время, например: завтра в 10:00.");
+      return failureResponse("unknown_or_ambiguous", "Когда поставить напоминание? Укажите дату и время, например: завтра в 10:00.", "clarification_required");
     }
     const [item] = await db
       .insert(itemsTable)
@@ -981,16 +1312,16 @@ export async function classifyAndExecuteAssistantAction({
   if (UPDATE_RE.test(normalized) && REMINDER_WORD_RE.test(normalized)) {
     const target = extractTarget(content, "reminder") || removeDateWords(content).replace(/измени|обнови|перенеси|напоминание|про/gi, "");
     const remindAt = parseRussianDateTime(content);
-    if (!remindAt) return baseResponse("update_reminder", "На какую дату и время перенести напоминание?");
+    if (!remindAt) return failureResponse("update_reminder", "На какую дату и время перенести напоминание?", "clarification_required");
     const matches = searchItems(items, target, "reminder");
-    if (matches.length === 0) return baseResponse("update_reminder", `Я не нашел напоминание${target ? ` про «${compact(target)}»` : ""}. Могу создать новое.`);
-    if (matches.length > 1) return baseResponse("update_reminder", listItemsMessage("Я нашел несколько напоминаний, уточните какое изменить", matches, folders));
+    if (matches.length === 0) return failureResponse("update_reminder", `Я не нашел напоминание${target ? ` про «${compact(target)}»` : ""}. Могу создать новое.`, "not_found");
+    if (matches.length > 1) return failureResponse("update_reminder", listItemsMessage("Я нашел несколько напоминаний, уточните какое изменить", matches, folders), "ambiguous");
     const [updated] = await db
       .update(itemsTable)
       .set({ reminderAt: remindAt })
       .where(and(eq(itemsTable.id, matches[0].id), eq(itemsTable.userId, userId), eq(itemsTable.type, "reminder")))
       .returning();
-    if (!updated) return baseResponse("update_reminder", "Не удалось изменить напоминание: объект не найден.");
+    if (!updated) return failureResponse("update_reminder", "Не удалось изменить напоминание: объект не найден.", "not_found");
     return baseResponse("update_reminder", `Готово: перенес напоминание «${updated.title}» на ${formatMoscowDateTime(remindAt)}.`);
   }
 
@@ -998,8 +1329,8 @@ export async function classifyAndExecuteAssistantAction({
     const type = NOTE_WORD_RE.test(normalized) ? "note" : FILE_WORD_RE.test(normalized) ? "file" : LIST_WORD_RE.test(normalized) ? "list" : "reminder";
     const target = extractTarget(content, type);
     const matches = searchItems(items, target, type);
-    if (matches.length === 0) return baseResponse(`delete_${type}` as AssistantActionIntent, `Я не нашел ${type === "note" ? "заметку" : type === "file" ? "файл" : type === "list" ? "список" : "напоминание"}${target ? ` «${target}»` : ""}.`);
-    if (matches.length > 1) return baseResponse(`delete_${type}` as AssistantActionIntent, listItemsMessage("Нашел несколько объектов, уточните какой удалить", matches, folders));
+    if (matches.length === 0) return failureResponse(`delete_${type}` as AssistantActionIntent, `Я не нашел ${type === "note" ? "заметку" : type === "file" ? "файл" : type === "list" ? "список" : "напоминание"}${target ? ` «${target}»` : ""}.`, "not_found");
+    if (matches.length > 1) return failureResponse(`delete_${type}` as AssistantActionIntent, listItemsMessage("Нашел несколько объектов, уточните какой удалить", matches, folders), "ambiguous");
     const item = matches[0];
     return withPending(
       `delete_${type}` as AssistantActionIntent,
@@ -1010,19 +1341,19 @@ export async function classifyAndExecuteAssistantAction({
 
   if (/перемест|перенеси|добавь.+в\s+папк/i.test(normalized)) {
     const folder = findFolder(folders, extractFolderName(content));
-    if (!folder) return baseResponse("move_item_to_folder", "Я не нашел целевую папку. Уточните название папки или создайте её.");
+    if (!folder) return failureResponse("move_item_to_folder", "Я не нашел целевую папку. Уточните название папки или создайте её.", "not_found");
     const type = NOTE_WORD_RE.test(normalized) ? "note" : FILE_WORD_RE.test(normalized) ? "file" : REMINDER_WORD_RE.test(normalized) ? "reminder" : LIST_WORD_RE.test(normalized) ? "list" : undefined;
     const target = type ? extractTarget(content, type) : extractTarget(content, "item");
     const matches = searchItems(items, target, type);
-    if (matches.length === 0) return baseResponse("move_item_to_folder", `Я не нашел объект${target ? ` «${target}»` : ""}.`);
-    if (matches.length > 1) return baseResponse("move_item_to_folder", listItemsMessage("Нашел несколько объектов, уточните какой переместить", matches, folders));
+    if (matches.length === 0) return failureResponse("move_item_to_folder", `Я не нашел объект${target ? ` «${target}»` : ""}.`, "not_found");
+    if (matches.length > 1) return failureResponse("move_item_to_folder", listItemsMessage("Нашел несколько объектов, уточните какой переместить", matches, folders), "ambiguous");
     const [updated] = await db.update(itemsTable).set({ folderId: folder.id }).where(and(eq(itemsTable.id, matches[0].id), eq(itemsTable.userId, userId))).returning();
-    if (!updated) return baseResponse("move_item_to_folder", "Не удалось переместить объект: он не найден.");
+    if (!updated) return failureResponse("move_item_to_folder", "Не удалось переместить объект: он не найден.", "not_found");
     return baseResponse("move_item_to_folder", `Готово: переместил «${itemTitle(updated)}» в папку «${folder.name}».`);
   }
 
   if (UPDATE_RE.test(normalized) && NOTE_WORD_RE.test(normalized)) {
-    return baseResponse("update_note", "Чтобы изменить заметку, укажите её название и новый текст. Например: «измени заметку про адаптив: новый текст...».");
+    return failureResponse("update_note", "Чтобы изменить заметку, укажите её название и новый текст. Например: «измени заметку про адаптив: новый текст...».", "clarification_required");
   }
 
   if (/перескажи|что\s+в\s+файле|по\s+этому\s+файлу|этот\s+файл|этот\s+документ/i.test(normalized)) {
