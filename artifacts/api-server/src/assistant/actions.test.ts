@@ -146,7 +146,16 @@ test("action logic does not claim success when a reminder has no date", async ()
   assert.equal(result.responseMode, "action_executed");
   assert.equal(result.assistantContext.actionResult?.success, false);
   assert.equal(result.assistantContext.actionResult?.error, "confirmation_required");
-  assert.equal(result.assistantContext.pendingAction?.action, "create_reminder");
+  assert.ok(
+    result.assistantContext.pendingAction &&
+      "action" in result.assistantContext.pendingAction,
+  );
+  if (
+    result.assistantContext.pendingAction &&
+    "action" in result.assistantContext.pendingAction
+  ) {
+    assert.equal(result.assistantContext.pendingAction.action, "create_reminder");
+  }
 });
 
 test("validated AI intent persists an idea only after backend insert succeeds", async () => {
@@ -156,8 +165,6 @@ test("validated AI intent persists an idea only after backend insert succeeds", 
   const result = await executeValidatedAssistantIntent({
     intent: {
       intent: "create_note",
-      confidence: 0.97,
-      needsConfirmation: false,
       data: {
         title: "Добавить раздел про ИИ",
         content: "Добавить раздел про ИИ",
@@ -183,8 +190,6 @@ test("validated ordinary chat intent never creates an item", async () => {
   const result = await executeValidatedAssistantIntent({
     intent: {
       intent: "chat_general",
-      confidence: 0.98,
-      needsConfirmation: false,
       data: {},
     },
     userId: 7,
@@ -197,51 +202,95 @@ test("validated ordinary chat intent never creates an item", async () => {
   assert.equal(result.responseMode, "reply_only");
 });
 
-test("validated dangerous AI intent requests confirmation without mutation", async () => {
-  const { executeValidatedAssistantIntent } = await actionsModule;
-  const store = createPersistence();
-
-  const result = await executeValidatedAssistantIntent({
-    intent: {
-      intent: "delete_item",
-      confidence: 0.99,
-      needsConfirmation: true,
-      data: {
-        itemQuery: "черновик диплома",
-        itemType: "note",
-      },
-    },
-    userId: 7,
-    folders: [],
-    persistence: store.persistence,
-  });
-
-  assert.equal(store.inserted.length, 0);
-  assert.equal(result.assistantContext.actionResult?.success, false);
-  assert.equal(
-    result.assistantContext.actionResult?.error,
-    "confirmation_required",
-  );
-});
-
-test("low-confidence chat intent asks for clarification", async () => {
+test("ordinary plan remains chat without confidence-based buttons", async () => {
   const { executeValidatedAssistantIntent } = await actionsModule;
   const store = createPersistence();
 
   const result = await executeValidatedAssistantIntent({
     intent: {
       intent: "chat_general",
-      confidence: 0.4,
-      needsConfirmation: false,
       data: {},
     },
     userId: 7,
     folders: [],
+    originalMessage: "нужно будет добавить больше скриншотов",
     persistence: store.persistence,
   });
 
   assert.equal(store.inserted.length, 0);
-  assert.equal(result.handled, true);
+  assert.equal(result.handled, false);
+  assert.equal(result.responseMode, "reply_only");
+  assert.equal(result.assistantContext.actionButtons, undefined);
+});
+
+test("cancelled pending action has an explicit cancelled result", async () => {
+  const { createCancelledResponse } = await actionsModule;
+  const result = createCancelledResponse();
+
+  assert.equal(result.assistantContext.assistantReply, "Действие отменено.");
   assert.equal(result.assistantContext.actionResult?.success, false);
-  assert.equal(result.assistantContext.actionResult?.error, "low_confidence");
+  assert.equal(result.assistantContext.actionResult?.error, "cancelled");
+});
+
+test("equally matching targets request textual clarification", async () => {
+  const { executeValidatedAssistantIntent } = await actionsModule;
+  const now = new Date();
+  const makeList = (id: number, title: string) => ({
+    id,
+    userId: 7,
+    folderId: null,
+    type: "list" as const,
+    title,
+    content: JSON.stringify({ kind: "todo-list", items: [] }),
+    summary: null,
+    originalFilename: null,
+    mimeType: null,
+    fileSize: null,
+    fileData: null,
+    reminderAt: null,
+    status: "active" as const,
+    aiCategory: null,
+    aiTags: [],
+    aiConfidence: null,
+    createdAt: now,
+    updatedAt: now,
+  });
+
+  const result = await executeValidatedAssistantIntent({
+    intent: {
+      intent: "update_list",
+      data: {
+        targetQuery: "продукты",
+        addItems: ["сыр"],
+      },
+    },
+    userId: 7,
+    originalMessage: "добавь сыр в список продуктов",
+    folders: [],
+    items: [
+      makeList(1, "Продукты на неделю"),
+      makeList(2, "Продукты для праздника"),
+    ],
+  });
+
+  assert.equal(result.responseMode, "action_executed");
+  assert.equal(result.assistantContext.actionResult?.success, false);
+  assert.equal(result.assistantContext.actionResult?.error, "ambiguous");
+  assert.equal(result.assistantContext.actionButtons, undefined);
+});
+
+test("list completion marks an item done instead of removing it", async () => {
+  const { applyListItemUpdates } = await actionsModule;
+  const result = applyListItemUpdates(
+    [
+      { id: "milk", text: "молоко", done: false },
+      { id: "bread", text: "хлеб", done: false },
+    ],
+    { completeItems: ["молоко"] },
+  );
+
+  assert.deepEqual(result, [
+    { id: "milk", text: "молоко", done: true },
+    { id: "bread", text: "хлеб", done: false },
+  ]);
 });

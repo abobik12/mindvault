@@ -74,7 +74,17 @@ const SEARCH_STOP_WORDS = new Set([
   "перескажи",
   "сохраненных",
   "сохраненные",
+  "сохранено",
+  "записано",
   "данных",
+  "заметка",
+  "заметки",
+  "напоминание",
+  "напоминания",
+  "список",
+  "списки",
+  "файл",
+  "файлы",
 ]);
 
 const SAVED_DATA_QUERY_RE =
@@ -136,6 +146,29 @@ function detectQueryIntent(query: string): QueryIntent {
   return getSearchTerms(query).length > 0 ? "topic" : "general";
 }
 
+export function shouldIncludeCollectionByIntent(
+  query: string,
+  queryIntent: QueryIntent,
+  itemType: Item["type"],
+): boolean {
+  const normalized = normalizeText(query).trim();
+  const isBroadCollectionQuery =
+    (/^(?:какие|покажи|перечисли|выведи|что\s+у\s+меня)(?=\s|$)/i.test(
+      normalized,
+    ) &&
+      !/(?:^|\s)(?:про|о|об|по\s+теме)(?=\s|$)/i.test(normalized)) ||
+    /ближайш\w*\s+напомин/i.test(normalized);
+
+  if (!isBroadCollectionQuery) return false;
+  return (
+    queryIntent === "saved" ||
+    (queryIntent === "notes" && itemType === "note") ||
+    (queryIntent === "files" && itemType === "file") ||
+    (queryIntent === "reminders" && itemType === "reminder") ||
+    (queryIntent === "lists" && itemType === "list")
+  );
+}
+
 function truncateText(value: string | null | undefined, maxLength: number): string {
   const normalized = (value ?? "").replace(/\s+/g, " ").trim();
   if (!normalized) return "";
@@ -163,6 +196,16 @@ function formatDateTime(value: Date | null | undefined): string {
         minute: "2-digit",
       })
     : "дата не указана";
+}
+
+export function getSourceDisplayDate(
+  type: SourceType,
+  reminderAt: Date | null | undefined,
+  updatedAt: Date | null | undefined,
+): string {
+  return type === "reminder"
+    ? formatDateTime(reminderAt)
+    : formatDate(updatedAt);
 }
 
 function formatFileSize(bytes: number | null | undefined): string {
@@ -322,7 +365,7 @@ function sourceFromItem(item: Item, folder: string, score: number): RelevantSour
     title: item.type === "file" ? item.originalFilename ?? item.title : item.title,
     folder,
     folderName: folder,
-    date: formatDate(item.updatedAt),
+    date: getSourceDisplayDate(item.type, item.reminderAt, item.updatedAt),
     createdAt: item.createdAt.toISOString(),
     updatedAt: item.updatedAt.toISOString(),
     excerpt: extractTextPreview(item),
@@ -475,13 +518,11 @@ export async function buildAssistantContext(
     for (const item of allItems) {
       const folder = folderMap.get(item.folderId ?? 0) ?? "Без папки";
       const score = scoreItem(currentMessage, terms, item, folder);
-      const shouldIncludeByIntent =
-        queryIntent === "saved" ||
-        requestedTypes.includes(item.type) ||
-        (queryIntent === "notes" && item.type === "note") ||
-        (queryIntent === "files" && item.type === "file") ||
-        (queryIntent === "reminders" && item.type === "reminder") ||
-        (queryIntent === "lists" && item.type === "list");
+      const shouldIncludeByIntent = shouldIncludeCollectionByIntent(
+        currentMessage,
+        queryIntent,
+        item.type,
+      );
 
       if (score > 0 || shouldIncludeByIntent) {
         relevantSources.push(sourceFromItem(item, folder, score || (shouldIncludeByIntent ? 75 : 0)));

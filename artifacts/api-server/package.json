@@ -8,8 +8,8 @@
     "build": "node ./build.mjs",
     "start": "node --enable-source-maps ./dist/index.mjs",
     "typecheck": "tsc -p tsconfig.json --noEmit",
-    "test": "tsx --test src/assistant/command-parser.test.ts src/assistant/assistant-intent.test.ts src/assistant/actions.test.ts",
-    "test:commands": "tsx --test src/assistant/command-parser.test.ts src/assistant/assistant-intent.test.ts src/assistant/actions.test.ts"
+    "test": "tsx --test src/assistant/command-parser.test.ts src/assistant/assistant-intent.test.ts src/assistant/ai-intent-classifier.test.ts src/assistant/assistant-memory.test.ts src/assistant/assistant-undo.test.ts src/assistant/assistant-sources.test.ts src/assistant/assistant-offline.test.ts src/assistant/actions.test.ts src/lib/ai-context.test.ts",
+    "test:commands": "tsx --test src/assistant/command-parser.test.ts src/assistant/assistant-intent.test.ts src/assistant/ai-intent-classifier.test.ts src/assistant/assistant-memory.test.ts src/assistant/assistant-undo.test.ts src/assistant/assistant-sources.test.ts src/assistant/assistant-offline.test.ts src/assistant/actions.test.ts src/lib/ai-context.test.ts"
   },
   "dependencies": {
     "@google/genai": "^1.44.0",

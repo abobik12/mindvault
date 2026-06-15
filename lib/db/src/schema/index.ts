@@ -3,3 +3,4 @@ export * from "./folders";
 export * from "./items";
 export * from "./conversations";
 export * from "./messages";
+export * from "./assistant-operations";

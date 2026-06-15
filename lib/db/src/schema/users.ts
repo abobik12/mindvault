@@ -1,4 +1,4 @@
-import { pgTable, text, serial, timestamp } from "drizzle-orm/pg-core";
+import { jsonb, pgTable, text, serial, timestamp } from "drizzle-orm/pg-core";
 import { createInsertSchema } from "drizzle-zod";
 import { z } from "zod/v4";
 
@@ -8,6 +8,18 @@ export const usersTable = pgTable("users", {
   passwordHash: text("password_hash").notNull(),
   fullName: text("full_name").notNull(),
   avatarUrl: text("avatar_url"),
+  assistantProfile: jsonb("assistant_profile")
+    .$type<{
+      facts: Array<{
+        category: "person" | "alias" | "slang" | "preference" | "project" | "habit";
+        key: string;
+        value: string;
+        mentions: number;
+        updatedAt: string;
+      }>;
+    }>()
+    .notNull()
+    .default({ facts: [] }),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow().$onUpdate(() => new Date()),
 });

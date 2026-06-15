@@ -18,15 +18,24 @@ import {
   getCurrentMoscowDateTimeForModel,
   parseReminderDateTime,
 } from "../lib/time";
-import { buildAssistantContext, formatContextForPrompt, type UserContextData } from "../lib/ai-context";
+import { type UserContextData } from "../lib/ai-context";
 import { canAttemptTextExtraction, extractTextFromUpload } from "../lib/file-extraction";
 import {
-  classifyAndExecuteAssistantAction,
-  executeValidatedAssistantIntent,
   type AssistantActionContext,
   type AssistantActionIntent,
 } from "../assistant/actions";
-import { classifyAssistantIntent } from "../assistant/ai-intent-classifier";
+import { handleAssistantMessage } from "../assistant/assistant-handler";
+import type { AssistantActionSelection } from "../assistant/assistant-contract";
+import {
+  intentUsesPersonalSources,
+  selectSourcesUsedInResponse,
+} from "../assistant/assistant-sources";
+import { buildOfflineAssistantReply } from "../assistant/assistant-offline";
+import {
+  formatContextLayersForPrompt,
+  prepareAssistantContextLayers,
+} from "../assistant/assistant-memory";
+import { undoAssistantOperation } from "../assistant/assistant-undo";
 
 const router: IRouter = Router();
 const AI_TEXT_MODEL =
@@ -47,7 +56,10 @@ const DEFAULT_ASSISTANT_SYSTEM_PROMPT = `Ты — ассистент MindVault, 
 - если нужно изменить или удалить объект, сначала он должен быть найден в данных пользователя;
 - если найдено несколько объектов, попроси уточнить; если объект не найден, честно скажи об этом;
 - использовать ясные формулировки на русском языке;
-- не добавлять лишнюю воду.
+- отвечать только на русском языке;
+- не добавлять лишнюю воду;
+- не завершать ответ фразами "если хотите, я могу", "могу также" или другими лишними предложениями;
+- если вопрос не относится к данным MindVault, не упоминать заметки, файлы и источники пользователя.
 
 Если пользователь что-то сохранил, подтверждай это естественно и кратко.`;
 
@@ -64,7 +76,14 @@ const ACTION_ON_EXISTING_RE =
 const AMBIGUOUS_REMINDER_RE =
   /(завтра|послезавтра|в\s+(понедельник|вторник|среду|четверг|пятницу|субботу|воскресенье)|через\s+\d+)/i;
 
-type IntentType = AssistantActionIntent | "chat_only" | "save_note" | "save_reminder" | "save_file" | "create_list" | "action_on_existing";
+type IntentType =
+  | AssistantActionIntent
+  | "chat_only"
+  | "save_note"
+  | "save_reminder"
+  | "save_file"
+  | "create_list"
+  | "action_on_existing";
 type ResponseMode = "reply_only" | "saved" | "suggest_actions" | "action_executed";
 
 type ChatAttachment = {
@@ -157,9 +176,18 @@ function sanitizeAssistantContext(raw: unknown): AssistantContext {
       source.pendingAction && typeof source.pendingAction === "object"
         ? (source.pendingAction as AssistantActionContext["pendingAction"])
         : undefined,
+    actionButtons: Array.isArray(source.actionButtons)
+      ? (source.actionButtons as NonNullable<
+          AssistantActionContext["actionButtons"]
+        >)
+      : undefined,
     actionResult:
       source.actionResult && typeof source.actionResult === "object"
         ? (source.actionResult as AssistantActionContext["actionResult"])
+        : undefined,
+    undoAction:
+      source.undoAction && typeof source.undoAction === "object"
+        ? (source.undoAction as NonNullable<AssistantActionContext>["undoAction"])
         : undefined,
   };
 }
@@ -263,45 +291,6 @@ function buildOfflineContextSummary(context?: UserContextData): string | null {
   }
 
   return null;
-}
-
-function buildOfflineAssistantReply(userMessage: string, reason?: string, context?: UserContextData): string {
-  const trimmed = userMessage.trim();
-  const contextSummary = buildOfflineContextSummary(context);
-  const isQuotaError =
-    typeof reason === "string" &&
-    (reason.includes("insufficient_quota") || reason.toLowerCase().includes("quota"));
-
-  if (isQuotaError) {
-    return [
-      "Сейчас AI-провайдер недоступен из-за лимита аккаунта (`insufficient_quota`).",
-      "",
-      "Что сделать:",
-      "- пополнить баланс/включить биллинг у провайдера;",
-      "- или указать другой ключ/провайдер в `OPENROUTER_API_KEY` / `OPENAI_API_KEY`.",
-      "",
-      contextSummary ?? "В сохраненных данных я не нашел ничего похожего.",
-      "",
-      `Ваш запрос: **${trimmed || "пустой запрос"}**`,
-    ].join("\n");
-  }
-
-  if (!trimmed) {
-    return "Я на связи в офлайн-режиме. Напишите сообщение, и я помогу сформулировать задачу.";
-  }
-
-  return [
-    "Сейчас не удалось получить ответ от AI-провайдера, поэтому включен офлайн-режим.",
-    "",
-    contextSummary ?? "В сохраненных данных я не нашел ничего похожего.",
-    "",
-    `Ваш запрос: **${trimmed}**`,
-    "",
-    "Что можно сделать прямо сейчас:",
-    "- я могу помочь структурировать задачу;",
-    "- подготовить текст заметки;",
-    "- предложить формулировку напоминания в московском времени.",
-  ].join("\n");
 }
 
 async function getOrCreateDefaultConversation(userId: number) {
@@ -446,18 +435,38 @@ function getAttachmentsFromMetadata(metadata: unknown): ChatAttachment[] {
 
 function formatMessageForModel(content: string, metadata: unknown): string {
   const attachments = getAttachmentsFromMetadata(metadata);
-  if (attachments.length === 0) return content;
-
-  const names = attachments.map((attachment) => attachment.name).join(", ");
-  return `${content}\n\nAttached files in this message: ${names}`;
+  const context = sanitizeAssistantContext(metadata);
+  const notes: string[] = [];
+  if (attachments.length > 0) {
+    notes.push(
+      `Прикреплённые файлы: ${attachments
+        .map((attachment) => attachment.name)
+        .join(", ")}`,
+    );
+  }
+  if (context?.savedItem) {
+    notes.push(
+      `Связанный объект: [${context.savedItem.type}] id=${context.savedItem.id} «${context.savedItem.title}»${
+        context.savedItem.folderName
+          ? `, папка «${context.savedItem.folderName}»`
+          : ""
+      }`,
+    );
+  }
+  return notes.length > 0 ? `${content}\n\n${notes.join("\n")}` : content;
 }
 
 function buildAssistantMessageMetadata(
   assistantContext: AssistantContext,
   userContext?: UserContextData,
+  responseText = "",
 ): AssistantContext | (Record<string, unknown> & { sources?: unknown[] }) | null {
-  const sources =
-    userContext?.relevantSources.slice(0, 8).map((source) => ({
+  const exposesSources = intentUsesPersonalSources(
+    assistantContext?.intentType,
+  );
+  if (!exposesSources) return assistantContext;
+
+  const sources = selectSourcesUsedInResponse(userContext, responseText).map((source) => ({
       id: source.id ?? null,
       type: source.type,
       title: source.title,
@@ -467,12 +476,76 @@ function buildAssistantMessageMetadata(
       createdAt: source.createdAt ?? null,
       updatedAt: source.updatedAt ?? null,
       score: source.score,
-    })) ?? [];
+    }));
 
   if (sources.length === 0) return assistantContext;
   return {
     ...(assistantContext ?? {}),
     sources,
+  };
+}
+
+async function serializeMessagesForUser(
+  userId: number,
+  rows: Array<typeof messages.$inferSelect>,
+) {
+  const [availableItems, availableFolders] = await Promise.all([
+    db
+      .select({ id: itemsTable.id })
+      .from(itemsTable)
+      .where(eq(itemsTable.userId, userId)),
+    db
+      .select({ id: foldersTable.id })
+      .from(foldersTable)
+      .where(eq(foldersTable.userId, userId)),
+  ]);
+  const itemIds = new Set(availableItems.map((item) => item.id));
+  const folderIds = new Set(availableFolders.map((folder) => folder.id));
+
+  return rows.map((message) => {
+    const metadata =
+      message.metadata && typeof message.metadata === "object"
+        ? { ...message.metadata }
+        : null;
+    if (metadata && Array.isArray(metadata.sources)) {
+      metadata.sources = metadata.sources.filter((entry) => {
+        if (!entry || typeof entry !== "object") return false;
+        const source = entry as Record<string, unknown>;
+        if (source.type === "message") return true;
+        if (typeof source.id !== "number") return false;
+        return source.type === "folder"
+          ? folderIds.has(source.id)
+          : itemIds.has(source.id);
+      });
+    }
+    return {
+      id: message.id,
+      conversationId: message.conversationId,
+      role: message.role,
+      content: message.content,
+      metadata,
+      createdAt: message.createdAt.toISOString(),
+    };
+  });
+}
+
+function emptyUserContext(): UserContextData {
+  return {
+    overview: {
+      folderCount: 0,
+      noteCount: 0,
+      fileCount: 0,
+      reminderCount: 0,
+      listCount: 0,
+    },
+    folders: [],
+    recentNotes: [],
+    recentFiles: [],
+    upcomingReminders: [],
+    recentLists: [],
+    relevantSources: [],
+    queryIntent: "general",
+    requestedTypes: [],
   };
 }
 
@@ -514,6 +587,46 @@ router.post("/gemini/conversations", requireAuth, async (req, res): Promise<void
   });
 });
 
+router.post(
+  "/gemini/conversations/:conversationId/actions/:operationId/undo",
+  requireAuth,
+  async (req, res): Promise<void> => {
+    const rawConversationId = Array.isArray(req.params.conversationId)
+      ? req.params.conversationId[0]
+      : req.params.conversationId;
+    const operationId = Array.isArray(req.params.operationId)
+      ? req.params.operationId[0]
+      : req.params.operationId;
+    const conversationId = Number.parseInt(rawConversationId ?? "", 10);
+    if (!Number.isInteger(conversationId) || !operationId) {
+      res.status(400).json({ error: "Некорректные данные запроса" });
+      return;
+    }
+
+    const [conversation] = await db
+      .select({ id: conversations.id })
+      .from(conversations)
+      .where(
+        and(
+          eq(conversations.id, conversationId),
+          eq(conversations.userId, req.auth!.userId),
+        ),
+      )
+      .limit(1);
+    if (!conversation) {
+      res.status(404).json({ error: "Диалог не найден" });
+      return;
+    }
+
+    const result = await undoAssistantOperation({
+      operationId,
+      userId: req.auth!.userId,
+      conversationId,
+    });
+    res.status(result.success ? 200 : 409).json(result);
+  },
+);
+
 router.get("/gemini/conversations/default", requireAuth, async (req, res): Promise<void> => {
   const conversation = await getOrCreateDefaultConversation(req.auth!.userId);
 
@@ -527,14 +640,10 @@ router.get("/gemini/conversations/default", requireAuth, async (req, res): Promi
     id: conversation.id,
     title: conversation.title,
     createdAt: conversation.createdAt.toISOString(),
-    messages: conversationMessages.map((message) => ({
-      id: message.id,
-      conversationId: message.conversationId,
-      role: message.role,
-      content: message.content,
-      metadata: message.metadata ?? null,
-      createdAt: message.createdAt.toISOString(),
-    })),
+    messages: await serializeMessagesForUser(
+      req.auth!.userId,
+      conversationMessages,
+    ),
   });
 });
 
@@ -566,14 +675,10 @@ router.get("/gemini/conversations/:id", requireAuth, async (req, res): Promise<v
     id: conversation.id,
     title: conversation.title,
     createdAt: conversation.createdAt.toISOString(),
-    messages: conversationMessages.map((message) => ({
-      id: message.id,
-      conversationId: message.conversationId,
-      role: message.role,
-      content: message.content,
-      metadata: message.metadata ?? null,
-      createdAt: message.createdAt.toISOString(),
-    })),
+    messages: await serializeMessagesForUser(
+      req.auth!.userId,
+      conversationMessages,
+    ),
   });
 });
 
@@ -656,14 +761,7 @@ router.get("/gemini/conversations/:id/messages", requireAuth, async (req, res): 
     .orderBy(messages.createdAt);
 
   res.json(
-    conversationMessages.map((message) => ({
-      id: message.id,
-      conversationId: message.conversationId,
-      role: message.role,
-      content: message.content,
-      metadata: message.metadata ?? null,
-      createdAt: message.createdAt.toISOString(),
-    })),
+    await serializeMessagesForUser(req.auth!.userId, conversationMessages),
   );
 });
 
@@ -706,6 +804,26 @@ router.post("/gemini/conversations/:id/messages", requireAuth, async (req, res):
     typeof rawBody.folderId === "number" && Number.isInteger(rawBody.folderId)
       ? rawBody.folderId
       : null;
+  const actionSelection: AssistantActionSelection = {
+    pendingActionId:
+      typeof rawBody.pendingActionId === "string"
+        ? rawBody.pendingActionId
+        : undefined,
+    selectedIntent:
+      rawBody.selectedIntent === "create_note" ||
+      rawBody.selectedIntent === "create_list" ||
+      rawBody.selectedIntent === "create_reminder" ||
+      rawBody.selectedIntent === "cancel"
+        ? rawBody.selectedIntent
+        : undefined,
+    selectedItemId:
+      typeof rawBody.selectedItemId === "number" &&
+      Number.isInteger(rawBody.selectedItemId)
+        ? rawBody.selectedItemId
+        : undefined,
+    confirm: rawBody.confirm === true,
+    cancel: rawBody.cancel === true,
+  };
 
   const [conversation] = await db
     .select()
@@ -764,83 +882,29 @@ router.post("/gemini/conversations/:id/messages", requireAuth, async (req, res):
     })
     .returning();
 
+  const contextLayers = await prepareAssistantContextLayers({
+    userId: req.auth!.userId,
+    conversationId: conversation.id,
+    currentMessage: messageForContextSearch,
+    model: AI_TEXT_MODEL,
+  });
+
   let assistantContext: AssistantContext = null;
   try {
-    let actionResult = await classifyAndExecuteAssistantAction({
+    const actionResult = await handleAssistantMessage({
       userId: req.auth!.userId,
-      content: bodyParsed.data.content,
       conversationId: conversation.id,
+      text: bodyParsed.data.content,
+      model: AI_TEXT_MODEL,
       folderId: requestedFolderId,
+      selection: actionSelection,
+      contextLayers,
     });
-
-    if (!actionResult.handled && actionResult.responseMode === "reply_only") {
-      const userFolders = await db
-        .select()
-        .from(foldersTable)
-        .where(eq(foldersTable.userId, req.auth!.userId));
-      const classification = await classifyAssistantIntent({
-        message: bodyParsed.data.content,
-        folderNames: userFolders.map((folder) => folder.name),
-        model: AI_TEXT_MODEL,
-      });
-
-      if (classification.status === "valid") {
-        actionResult = await executeValidatedAssistantIntent({
-          intent: classification.value,
-          userId: req.auth!.userId,
-          folderId: requestedFolderId,
-          folders: userFolders,
-        });
-        logger.info(
-          {
-            userId: req.auth!.userId,
-            conversationId: conversation.id,
-            intent: classification.value.intent,
-            confidence: classification.value.confidence,
-            responseMode: actionResult.responseMode,
-          },
-          "[assistant] AI intent classified and handled",
-        );
-      } else if (classification.status === "invalid") {
-        logger.warn(
-          {
-            userId: req.auth!.userId,
-            conversationId: conversation.id,
-            reason: classification.reason,
-          },
-          "[assistant] AI intent response rejected by schema",
-        );
-        assistantContext = {
-          intentType: "unknown_or_ambiguous",
-          responseMode: "action_executed",
-          assistantReply:
-            "Не удалось надёжно определить действие. Уточните, что именно нужно сделать в MindVault.",
-          savedItem: null,
-          actionResult: {
-            success: false,
-            action: "ai_intent_classification",
-            error: "invalid_classifier_response",
-          },
-        };
-      } else {
-        logger.warn(
-          {
-            userId: req.auth!.userId,
-            conversationId: conversation.id,
-            reason: classification.reason,
-          },
-          "[assistant] AI intent classifier unavailable, continuing with chat fallback",
-        );
-      }
-    }
-
-    if (!assistantContext) {
-      assistantContext = actionResult.assistantContext;
-    }
+    assistantContext = actionResult.assistantContext;
   } catch (err) {
     logger.error(
       { err, userId: req.auth!.userId, conversationId: conversation.id },
-      "[assistant] deterministic action failed",
+      "[assistant] message pipeline failed",
     );
     assistantContext = {
       intentType: "unknown_or_ambiguous",
@@ -849,30 +913,20 @@ router.post("/gemini/conversations/:id/messages", requireAuth, async (req, res):
       savedItem: null,
       actionResult: {
         success: false,
-        action: "deterministic_action",
+        action: "assistant_pipeline",
         error: "execution_failed",
       },
     };
   }
 
-  const chatHistory = await db
-    .select()
-    .from(messages)
-    .where(eq(messages.conversationId, conversation.id))
-    .orderBy(messages.createdAt);
+  const chatHistory = contextLayers.recentMessages;
 
-  const userContext = await buildAssistantContext(
-    req.auth!.userId,
-    messageForContextSearch,
-    conversation.id,
-    {
-      maxRecentItems: 12,
-      maxSearchResults: 20,
-      includeArchived: false,
-    },
+  const shouldUsePersonalContext = intentUsesPersonalSources(
+    assistantContext?.intentType,
   );
-  const assistantMessageMetadata = buildAssistantMessageMetadata(assistantContext, userContext);
-
+  const userContext = shouldUsePersonalContext
+    ? contextLayers.userContext
+    : emptyUserContext();
   const systemPrompt =
     process.env.ASSISTANT_SYSTEM_PROMPT?.trim() || DEFAULT_ASSISTANT_SYSTEM_PROMPT;
 
@@ -885,6 +939,11 @@ router.post("/gemini/conversations/:id/messages", requireAuth, async (req, res):
   const deterministicReply = assistantContext?.assistantReply?.trim();
 
   if (assistantContext && deterministicReply && assistantContext.responseMode !== "reply_only") {
+    const assistantMessageMetadata = buildAssistantMessageMetadata(
+      assistantContext,
+      userContext,
+      deterministicReply,
+    );
     await db.insert(messages).values({
       conversationId: conversation.id,
       role: "assistant",
@@ -898,7 +957,9 @@ router.post("/gemini/conversations/:id/messages", requireAuth, async (req, res):
     return;
   }
 
-  const contextForPrompt = formatContextForPrompt(userContext);
+  const contextForPrompt = formatContextLayersForPrompt(contextLayers, {
+    includeRelevantObjects: shouldUsePersonalContext,
+  });
   logger.info(
     {
       userId: req.auth!.userId,
@@ -910,25 +971,24 @@ router.post("/gemini/conversations/:id/messages", requireAuth, async (req, res):
     "[assistant-context] attached context to AI prompt",
   );
 
-  try {
-    const systemPromptWithContext = systemPrompt + contextForPrompt + attachmentContext;
-    const currentUserContent = attachmentContext
-      ? `${bodyParsed.data.content}${attachmentContext}`
-      : bodyParsed.data.content;
-
-    const contentsForGemini = [
-      { role: "user" as const, parts: [{ text: systemPromptWithContext }] },
-      {
-        role: "model" as const,
-        parts: [{ text: "Понял задачу. Готов помочь с организацией вашего рабочего пространства." }],
-      },
-      ...chatHistory.slice(0, -1).map((message) => ({
+  const systemPromptWithContext = systemPrompt + contextForPrompt + attachmentContext;
+  const currentUserContent = attachmentContext
+    ? `${bodyParsed.data.content}${attachmentContext}`
+    : bodyParsed.data.content;
+  const contentsForGemini = [
+    { role: "user" as const, parts: [{ text: systemPromptWithContext }] },
+    {
+      role: "model" as const,
+      parts: [{ text: "Понял задачу. Готов помочь с организацией вашего рабочего пространства." }],
+    },
+    ...chatHistory.slice(0, -1).map((message) => ({
         role: (message.role === "assistant" ? "model" : "user") as "user" | "model",
         parts: [{ text: formatMessageForModel(message.content, message.metadata) }],
       })),
-      { role: "user" as const, parts: [{ text: currentUserContent }] },
-    ];
+    { role: "user" as const, parts: [{ text: currentUserContent }] },
+  ];
 
+  try {
     const stream = await ai.models.generateContentStream({
       model: AI_TEXT_MODEL,
       contents: contentsForGemini,
@@ -942,12 +1002,19 @@ router.post("/gemini/conversations/:id/messages", requireAuth, async (req, res):
         res.write(`data: ${JSON.stringify({ content: text })}\n\n`);
       }
     }
+    if (!fullResponse.trim()) {
+      throw new Error("empty_stream");
+    }
 
     await db.insert(messages).values({
       conversationId: conversation.id,
       role: "assistant",
       content: fullResponse,
-      metadata: assistantMessageMetadata,
+      metadata: buildAssistantMessageMetadata(
+        assistantContext,
+        userContext,
+        fullResponse,
+      ),
     });
 
     if (chatHistory.length <= 2 && conversation.title !== DEFAULT_CONVERSATION_TITLE) {
@@ -969,23 +1036,77 @@ router.post("/gemini/conversations/:id/messages", requireAuth, async (req, res):
 
     res.write(`data: ${JSON.stringify({ done: true, assistantContext })}\n\n`);
   } catch (err) {
-    logger.error({ err }, "Ошибка при стриминге ответа AI-провайдера, используем офлайн-ответ");
+    logger.error(
+      {
+        err,
+        errorMessage: err instanceof Error ? err.message : String(err),
+      },
+      "Ошибка при стриминге ответа AI-провайдера",
+    );
 
-    const errorMessage =
-      err instanceof Error ? err.message : typeof err === "string" ? err : undefined;
+    try {
+      const completion = await ai.models.generateContent({
+        model: AI_TEXT_MODEL,
+        contents: contentsForGemini,
+        config: { maxOutputTokens: 8192 },
+      });
+      const completionText = completion.text?.trim();
+
+      if (completionText) {
+        await db.insert(messages).values({
+          conversationId: conversation.id,
+          role: "assistant",
+          content: completionText,
+          metadata: buildAssistantMessageMetadata(
+            assistantContext,
+            userContext,
+            completionText,
+          ),
+        });
+        res.write(
+          `data: ${JSON.stringify({
+            content: completionText,
+            replace: fullResponse.length > 0,
+          })}\n\n`,
+        );
+        res.write(`data: ${JSON.stringify({ done: true, assistantContext })}\n\n`);
+        res.end();
+        return;
+      }
+    } catch (completionErr) {
+      logger.error(
+        {
+          err: completionErr,
+          errorMessage:
+            completionErr instanceof Error
+              ? completionErr.message
+              : String(completionErr),
+        },
+        "Не удалось получить и обычный ответ AI-провайдера",
+      );
+    }
+
     const fallbackResponse = buildOfflineAssistantReply(
       attachmentContext ? `${bodyParsed.data.content}${attachmentContext}` : bodyParsed.data.content,
-      errorMessage,
-      userContext,
+      buildOfflineContextSummary(userContext),
     );
     await db.insert(messages).values({
       conversationId: conversation.id,
       role: "assistant",
       content: fallbackResponse,
-      metadata: assistantMessageMetadata,
+      metadata: buildAssistantMessageMetadata(
+        assistantContext,
+        userContext,
+        fallbackResponse,
+      ),
     });
 
-    res.write(`data: ${JSON.stringify({ content: fallbackResponse })}\n\n`);
+    res.write(
+      `data: ${JSON.stringify({
+        content: fallbackResponse,
+        replace: fullResponse.length > 0,
+      })}\n\n`,
+    );
     res.write(`data: ${JSON.stringify({ done: true, assistantContext })}\n\n`);
   }
 

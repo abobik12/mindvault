@@ -44,6 +44,7 @@ import {
   X,
   FileText,
   Eraser,
+  Undo2,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { toast } from "sonner";
@@ -61,6 +62,7 @@ type IntentType =
   | "answer_about_user_content"
   | "create_note"
   | "create_list"
+  | "update_list"
   | "update_note"
   | "delete_note"
   | "delete_list"
@@ -70,6 +72,7 @@ type IntentType =
   | "search_reminders"
   | "search_files"
   | "answer_about_file"
+  | "answer_from_sources"
   | "move_item_to_folder"
   | "create_folder"
   | "rename_folder"
@@ -81,6 +84,20 @@ type ResponseMode = "reply_only" | "saved" | "suggest_actions" | "action_execute
 type ItemType = "note" | "file" | "reminder" | "list";
 type SuggestedAction = "save_note" | "save_reminder" | "create_list" | "ignore";
 type SourceType = "note" | "file" | "reminder" | "list" | "folder" | "message";
+type SelectableIntent =
+  | "create_note"
+  | "create_list"
+  | "create_reminder"
+  | "cancel";
+
+type AssistantActionButton = {
+  label: string;
+  pendingActionId: string;
+  selectedIntent?: SelectableIntent;
+  selectedItemId?: number;
+  confirm?: boolean;
+  cancel?: boolean;
+};
 
 type AssistantSavedItem = {
   id: number;
@@ -106,7 +123,12 @@ type AssistantMessageContext = {
   savedItem?: AssistantSavedItem | null;
   suggestedActions?: SuggestedAction[];
   pendingAction?: PendingAction | null;
+  actionButtons?: AssistantActionButton[];
   actionResult?: ActionResult | null;
+  undoAction?: {
+    id: string;
+    label: string;
+  };
 };
 
 type ChatMessage = {
@@ -158,12 +180,34 @@ type PendingAction =
       action: "create_reminder";
       text: string;
       reminderAt?: string | null;
+    }
+  | {
+      id: string;
+      kind: "choose_intent" | "choose_target" | "confirm_action";
+      originalMessage: string;
+      intent?: string;
+      possibleIntents?: SelectableIntent[];
+      targetCandidates?: Array<{
+        id: number;
+        type: ItemType;
+        title: string;
+      }>;
+      status: "pending";
+      expiresAt: string;
     };
 
 type ActionResult = {
   success: boolean;
   action: string;
   error?: string;
+};
+
+type AssistantSendOptions = {
+  pendingActionId?: string;
+  selectedIntent?: SelectableIntent;
+  selectedItemId?: number;
+  confirm?: boolean;
+  cancel?: boolean;
 };
 
 const MAX_CHAT_ATTACHMENT_SIZE = 20 * 1024 * 1024;
@@ -338,6 +382,39 @@ function readAssistantContext(raw: unknown): AssistantMessageContext | null {
           entry === "save_note" || entry === "save_reminder" || entry === "create_list" || entry === "ignore",
       )
     : undefined;
+  const actionButtons: AssistantActionButton[] | undefined = Array.isArray(
+    source.actionButtons,
+  )
+    ? source.actionButtons.reduce<AssistantActionButton[]>((buttons, entry) => {
+          if (!entry || typeof entry !== "object") return buttons;
+          const button = entry as Record<string, unknown>;
+          if (
+            typeof button.label !== "string" ||
+            typeof button.pendingActionId !== "string"
+          ) {
+            return buttons;
+          }
+          const selectedIntent =
+            button.selectedIntent === "create_note" ||
+            button.selectedIntent === "create_list" ||
+            button.selectedIntent === "create_reminder" ||
+            button.selectedIntent === "cancel"
+              ? button.selectedIntent
+              : undefined;
+          buttons.push({
+            label: button.label,
+            pendingActionId: button.pendingActionId,
+            selectedIntent,
+            selectedItemId:
+              typeof button.selectedItemId === "number"
+                ? button.selectedItemId
+                : undefined,
+            confirm: button.confirm === true,
+            cancel: button.cancel === true,
+          });
+          return buttons;
+        }, [])
+    : undefined;
 
   let pendingAction: PendingAction | null = null;
   const rawPendingAction = source.pendingAction;
@@ -372,6 +449,60 @@ function readAssistantContext(raw: unknown): AssistantMessageContext | null {
         text: action.text,
         reminderAt: typeof action.reminderAt === "string" ? action.reminderAt : null,
       };
+    } else if (
+      typeof action.id === "string" &&
+      (action.kind === "choose_intent" ||
+        action.kind === "choose_target" ||
+        action.kind === "confirm_action") &&
+      typeof action.originalMessage === "string" &&
+      action.status === "pending" &&
+      typeof action.expiresAt === "string"
+    ) {
+      pendingAction = {
+        id: action.id,
+        kind: action.kind,
+        originalMessage: action.originalMessage,
+        intent: typeof action.intent === "string" ? action.intent : undefined,
+        possibleIntents: Array.isArray(action.possibleIntents)
+          ? action.possibleIntents.filter(
+              (entry): entry is SelectableIntent =>
+                entry === "create_note" ||
+                entry === "create_list" ||
+                entry === "create_reminder" ||
+                entry === "cancel",
+            )
+          : undefined,
+        targetCandidates: Array.isArray(action.targetCandidates)
+          ? action.targetCandidates
+              .map((entry) => {
+                if (!entry || typeof entry !== "object") return null;
+                const candidate = entry as Record<string, unknown>;
+                if (
+                  typeof candidate.id !== "number" ||
+                  typeof candidate.title !== "string" ||
+                  (candidate.type !== "note" &&
+                    candidate.type !== "file" &&
+                    candidate.type !== "reminder" &&
+                    candidate.type !== "list")
+                ) {
+                  return null;
+                }
+                return {
+                  id: candidate.id,
+                  type: candidate.type,
+                  title: candidate.title,
+                };
+              })
+              .filter(
+                (
+                  entry,
+                ): entry is { id: number; type: ItemType; title: string } =>
+                  entry !== null,
+              )
+          : undefined,
+        status: "pending",
+        expiresAt: action.expiresAt,
+      };
     }
   }
 
@@ -388,6 +519,15 @@ function readAssistantContext(raw: unknown): AssistantMessageContext | null {
     }
   }
 
+  let undoAction: AssistantMessageContext["undoAction"];
+  const rawUndoAction = source.undoAction;
+  if (rawUndoAction && typeof rawUndoAction === "object") {
+    const action = rawUndoAction as Record<string, unknown>;
+    if (typeof action.id === "string" && typeof action.label === "string") {
+      undoAction = { id: action.id, label: action.label };
+    }
+  }
+
   return {
     intentType: intentType as IntentType,
     responseMode,
@@ -396,7 +536,9 @@ function readAssistantContext(raw: unknown): AssistantMessageContext | null {
     savedItem,
     suggestedActions,
     pendingAction,
+    actionButtons,
     actionResult,
+    undoAction,
   };
 }
 
@@ -506,6 +648,12 @@ export default function Home() {
   const [isConvertingType, setIsConvertingType] = useState(false);
   const [isSavingSuggested, setIsSavingSuggested] = useState(false);
   const [processingSuggestedMessageIds, setProcessingSuggestedMessageIds] = useState<Set<number>>(() => new Set());
+  const [processingUndoIds, setProcessingUndoIds] = useState<Set<string>>(
+    () => new Set(),
+  );
+  const [undoneOperationIds, setUndoneOperationIds] = useState<Set<string>>(
+    () => new Set(),
+  );
   const [isNearBottom, setIsNearBottom] = useState(true);
   const [selectedFiles, setSelectedFiles] = useState<File[]>([]);
   const [pendingFileAttachments, setPendingFileAttachments] = useState<ChatAttachment[]>([]);
@@ -1178,7 +1326,55 @@ export default function Home() {
     }
   };
 
-  const handleSend = async (overrideContent?: string) => {
+  const handleUndoAssistantAction = async (
+    messageId: number,
+    operationId: string,
+  ) => {
+    if (!activeConversationId || processingUndoIds.has(operationId)) return;
+    setProcessingUndoIds((current) => new Set(current).add(operationId));
+    try {
+      const token = localStorage.getItem("mindvault_token");
+      const response = await fetch(
+        `/api/gemini/conversations/${activeConversationId}/actions/${operationId}/undo`,
+        {
+          method: "POST",
+          headers: token ? { Authorization: `Bearer ${token}` } : undefined,
+        },
+      );
+      const result = (await response.json()) as {
+        success?: boolean;
+        message?: string;
+      };
+      if (!response.ok || !result.success) {
+        throw new Error(result.message || "Undo failed");
+      }
+
+      setUndoneOperationIds((current) => new Set(current).add(operationId));
+      patchMessageContext(messageId, (context) =>
+        context ? { ...context, undoAction: undefined } : context,
+      );
+      queryClient.invalidateQueries({ queryKey: getListItemsQueryKey() });
+      queryClient.invalidateQueries({ queryKey: getListFoldersQueryKey() });
+      toast.success(result.message || "Действие отменено");
+    } catch (error) {
+      toast.error(
+        error instanceof Error
+          ? error.message
+          : "Не удалось отменить действие",
+      );
+    } finally {
+      setProcessingUndoIds((current) => {
+        const next = new Set(current);
+        next.delete(operationId);
+        return next;
+      });
+    }
+  };
+
+  const handleSend = async (
+    overrideContent?: string,
+    actionSelection?: AssistantSendOptions,
+  ) => {
     const isOverrideMessage = typeof overrideContent === "string";
     const trimmedInput = isOverrideMessage ? overrideContent.trim() : input.trim();
     const filesToUpload = isOverrideMessage ? [] : selectedFiles;
@@ -1252,6 +1448,7 @@ export default function Home() {
             saveFolderContext === "auto" || saveFolderContext === "none"
               ? null
               : Number.parseInt(saveFolderContext, 10),
+          ...actionSelection,
         }),
       });
 
@@ -1290,9 +1487,13 @@ export default function Home() {
             }
 
             if (typeof parsed.content === "string") {
-              setStreamingMessage((prev) => prev + parsed.content);
+              setStreamingMessage((prev) =>
+                parsed.replace === true ? parsed.content : prev + parsed.content,
+              );
             } else if (typeof parsed.text === "string") {
-              setStreamingMessage((prev) => prev + parsed.text);
+              setStreamingMessage((prev) =>
+                parsed.replace === true ? parsed.text : prev + parsed.text,
+              );
             }
 
             const parsedAssistantContext = readAssistantContext(parsed.assistantContext);
@@ -1414,7 +1615,7 @@ export default function Home() {
 
   const handleOpenSource = (source: MessageSource) => {
     if (source.type === "note") setLocation("/notes");
-    if (source.type === "list") setLocation("/notes");
+    if (source.type === "list") setLocation("/lists");
     if (source.type === "file") setLocation("/files");
     if (source.type === "reminder") setLocation("/reminders");
     if (source.type === "folder" && source.id) setLocation(`/folders/${source.id}`);
@@ -1424,9 +1625,11 @@ export default function Home() {
     if (sources.length === 0) return null;
 
     return (
-      <div className="mt-2 w-full max-w-full rounded-xl border border-border/50 bg-background/70 px-3 py-2 text-xs text-muted-foreground">
-        <div className="mb-1 font-medium text-foreground">Использовано:</div>
-        <div className="flex flex-wrap gap-1.5">
+      <details className="mt-2 w-full max-w-full rounded-xl border border-border/50 bg-background/70 px-3 py-2 text-xs text-muted-foreground">
+        <summary className="cursor-pointer select-none font-medium text-foreground">
+          Использовано: {sources.length}
+        </summary>
+        <div className="mt-2 flex flex-wrap gap-1.5">
           {sources.slice(0, 6).map((source, index) => {
             const clickable = source.type !== "message";
             return (
@@ -1447,13 +1650,51 @@ export default function Home() {
             );
           })}
         </div>
-      </div>
+      </details>
     );
   };
 
   const renderPendingActionCard = (context: AssistantMessageContext | null) => {
     const pending = context?.pendingAction;
     if (!pending) return null;
+
+    if ("kind" in pending) {
+      const buttons = context?.actionButtons ?? [];
+      return (
+        <div className="mt-2 w-full rounded-xl border border-amber-200 bg-amber-50/80 px-3 py-2 text-xs text-amber-950">
+          <div className="font-medium">
+            {pending.kind === "choose_target"
+              ? "Выберите подходящий объект"
+              : pending.kind === "confirm_action"
+                ? "Подтвердите действие"
+                : "Что сделать с сообщением?"}
+          </div>
+          <div className="mt-2 flex flex-wrap gap-2">
+            {buttons.map((button) => (
+              <Button
+                key={`${button.pendingActionId}-${button.label}-${button.selectedItemId ?? button.selectedIntent ?? ""}`}
+                type="button"
+                size="sm"
+                variant={button.cancel ? "outline" : "default"}
+                className="h-7 rounded-lg px-2.5 text-[11px]"
+                onClick={() =>
+                  handleSend(button.label, {
+                    pendingActionId: button.pendingActionId,
+                    selectedIntent: button.selectedIntent,
+                    selectedItemId: button.selectedItemId,
+                    confirm: button.confirm,
+                    cancel: button.cancel,
+                  })
+                }
+                disabled={isStreaming}
+              >
+                {button.label}
+              </Button>
+            ))}
+          </div>
+        </div>
+      );
+    }
 
     const title =
       pending.action === "clear_chat"
@@ -1591,7 +1832,10 @@ export default function Home() {
 
     const savedItem = context.savedItem ?? null;
     const hasSuggestedActions = !savedItem && (context.suggestedActions?.length ?? 0) > 0;
-    if (!savedItem && !hasSuggestedActions) return <div className="mt-1 flex px-1">{messageMenu}</div>;
+    const undoAction = context.undoAction;
+    if (!savedItem && !hasSuggestedActions && !undoAction) {
+      return <div className="mt-1 flex px-1">{messageMenu}</div>;
+    }
 
     const sourceUserContent = getPreviousUserMessage(conversationMessages, index);
     const actionsDisabled =
@@ -1604,6 +1848,24 @@ export default function Home() {
     return (
       <div className="mt-2 flex flex-wrap gap-1.5 px-1">
         {messageMenu}
+        {undoAction ? (
+          <Button
+            variant="outline"
+            size="sm"
+            className="h-7 rounded-lg px-2.5 text-[11px]"
+            onClick={() => handleUndoAssistantAction(message.id, undoAction.id)}
+            disabled={
+              actionsDisabled ||
+              processingUndoIds.has(undoAction.id) ||
+              undoneOperationIds.has(undoAction.id)
+            }
+          >
+            <Undo2 className="mr-1 h-3 w-3" />
+            {undoneOperationIds.has(undoAction.id)
+              ? "Отменено"
+              : undoAction.label}
+          </Button>
+        ) : null}
         {savedItem ? (
           <>
             <Button
@@ -1767,9 +2029,8 @@ export default function Home() {
                   <div className="mx-auto max-w-2xl rounded-2xl border border-border/50 bg-card/80 px-4 py-3 text-sm text-muted-foreground shadow-sm">
                     <p className="text-foreground">Пишите обычный вопрос — ассистент просто ответит.</p>
                     <p className="mt-1">
-                      Чтобы сохранить информацию, начните сообщение со слова: <span className="font-medium text-foreground">заметка</span>,{" "}
-                      <span className="font-medium text-foreground">напоминание</span> или{" "}
-                      <span className="font-medium text-foreground">список</span>.
+                      Можно писать обычным русским языком: попросить сохранить идею,
+                      найти файл, изменить список или перенести напоминание.
                     </p>
                     <div className="mt-2 grid gap-1 text-xs sm:grid-cols-3">
                       <span>заметка изучить Java</span>

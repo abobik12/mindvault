@@ -1,0 +1,36 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<title>Общая архитектура веб-приложения</title>
+<style>
+  body { margin: 0; background: #f8fafc; }
+  .wrap { width: 1180px; margin: 0 auto; padding: 28px 0; }
+  svg { background: #ffffff; border: 1px solid #e2e8f0; box-shadow: 0 12px 30px rgba(15,23,42,.08); }
+</style>
+</head>
+<body>
+<div class="wrap">
+<svg width="1180" height="680" viewBox="0 0 1180 680" xmlns="http://www.w3.org/2000/svg">
+<defs>
+  <marker id="arrow" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto" markerUnits="strokeWidth">
+    <path d="M0,0 L0,6 L9,3 z" fill="#64748b"/>
+  </marker>
+</defs>
+<text x="590" y="42" text-anchor="middle" font-family="Arial" font-size="24" font-weight="700" fill="#111827"><tspan x="590" dy="0">Общая архитектура веб-приложения</tspan></text>
+<rect x="60" y="115" width="210" height="110" rx="14" fill="#eff6ff" stroke="#93c5fd" stroke-width="2"/><text x="165" y="148" text-anchor="middle" font-family="Arial" font-size="17" font-weight="600" fill="#0f172a"><tspan x="165" dy="0">Пользователь</tspan><tspan x="165" dy="22">desktop / mobile</tspan></text>
+<rect x="350" y="90" width="250" height="160" rx="14" fill="#f0fdf4" stroke="#86efac" stroke-width="2"/><text x="475" y="123" text-anchor="middle" font-family="Arial" font-size="17" font-weight="600" fill="#0f172a"><tspan x="475" dy="0">Frontend</tspan><tspan x="475" dy="22">React + Vite</tspan><tspan x="475" dy="22">TypeScript, Tailwind</tspan></text>
+<rect x="690" y="90" width="250" height="160" rx="14" fill="#fff7ed" stroke="#fdba74" stroke-width="2"/><text x="815" y="123" text-anchor="middle" font-family="Arial" font-size="17" font-weight="600" fill="#0f172a"><tspan x="815" dy="0">Backend API</tspan><tspan x="815" dy="22">Node.js + Express</tspan><tspan x="815" dy="22">валидация, бизнес-логика</tspan></text>
+<rect x="480" y="330" width="230" height="120" rx="14" fill="#f8fafc" stroke="#94a3b8" stroke-width="2"/><text x="595" y="363" text-anchor="middle" font-family="Arial" font-size="17" font-weight="600" fill="#0f172a"><tspan x="595" dy="0">PostgreSQL</tspan><tspan x="595" dy="22">Drizzle ORM</tspan><tspan x="595" dy="22">данные пользователя</tspan></text>
+<rect x="820" y="330" width="230" height="120" rx="14" fill="#f5f3ff" stroke="#c4b5fd" stroke-width="2"/><text x="935" y="363" text-anchor="middle" font-family="Arial" font-size="17" font-weight="600" fill="#0f172a"><tspan x="935" dy="0">ИИ-провайдер</tspan><tspan x="935" dy="22">OpenAI-compatible API</tspan><tspan x="935" dy="22">ответы ассистента</tspan></text>
+<rect x="150" y="330" width="220" height="120" rx="14" fill="#ecfeff" stroke="#67e8f9" stroke-width="2"/><text x="260" y="363" text-anchor="middle" font-family="Arial" font-size="17" font-weight="600" fill="#0f172a"><tspan x="260" dy="0">Файлы</tspan><tspan x="260" dy="22">base64 в БД</tspan><tspan x="260" dy="22">извлечение текста</tspan></text>
+<line x1="270" y1="170" x2="350" y2="170" stroke="#64748b" stroke-width="2.2" marker-end="url(#arrow)"/><text x="310" y="162" text-anchor="middle" font-family="Arial" font-size="13" font-weight="400" fill="#475569"><tspan x="310" dy="0">HTTP</tspan></text>
+<line x1="600" y1="170" x2="690" y2="170" stroke="#64748b" stroke-width="2.2" marker-end="url(#arrow)"/><text x="645" y="162" text-anchor="middle" font-family="Arial" font-size="13" font-weight="400" fill="#475569"><tspan x="645" dy="0">REST API</tspan></text>
+<line x1="815" y1="250" x2="670" y2="330" stroke="#64748b" stroke-width="2.2" marker-end="url(#arrow)"/><text x="742.5" y="282" text-anchor="middle" font-family="Arial" font-size="13" font-weight="400" fill="#475569"><tspan x="742.5" dy="0">SQL</tspan></text>
+<line x1="940" y1="250" x2="935" y2="330" stroke="#64748b" stroke-width="2.2" marker-end="url(#arrow)"/><text x="937.5" y="282" text-anchor="middle" font-family="Arial" font-size="13" font-weight="400" fill="#475569"><tspan x="937.5" dy="0">контекст</tspan></text>
+<line x1="690" y1="385" x2="710" y2="385" stroke="#64748b" stroke-width="2.2" marker-end="url(#arrow)"/>
+<line x1="370" y1="390" x2="480" y2="390" stroke="#64748b" stroke-width="2.2" marker-end="url(#arrow)"/><text x="425" y="382" text-anchor="middle" font-family="Arial" font-size="13" font-weight="400" fill="#475569"><tspan x="425" dy="0">метаданные</tspan></text>
+</svg>
+</div>
+</body>
+</html>

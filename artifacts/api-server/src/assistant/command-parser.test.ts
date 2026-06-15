@@ -43,6 +43,14 @@ test("explicit note commands are recognized without AI", () => {
     kind: "note",
     text: "подготовить текст защиты",
   });
+  assert.deepEqual(commandSummary("сохрани мысль проверить презентацию"), {
+    kind: "note",
+    text: "проверить презентацию",
+  });
+  assert.deepEqual(commandSummary("запиши идею добавить диаграмму"), {
+    kind: "note",
+    text: "добавить диаграмму",
+  });
   assert.deepEqual(commandSummary("заметка"), { kind: "note", text: "" });
   assert.deepEqual(commandSummary("заметка список напоминание"), { kind: "note", text: "список напоминание" });
 });
@@ -91,6 +99,22 @@ test("lists are parsed without AI and ignore empty items", () => {
     kind: "list",
     parsed: { title: "Список", items: ["хлеб", "молоко", "яйца"] },
   });
+  assert.deepEqual(commandSummary("список продукты молоко хлеб сыр"), {
+    kind: "list",
+    parsed: { title: "Продукты", items: ["молоко", "хлеб", "сыр"] },
+  });
+  assert.deepEqual(
+    commandSummary(
+      "чеклист для защиты открыть сайт показать чат показать файлы",
+    ),
+    {
+      kind: "list",
+      parsed: {
+        title: "Для защиты",
+        items: ["открыть сайт", "показать чат", "показать файлы"],
+      },
+    },
+  );
 });
 
 function moscowParts(date: Date) {
@@ -187,6 +211,15 @@ test("reminders parse explicit dates and use default time when time is omitted",
   assert.equal(cased.hasDate, true);
   assert.equal(cased.hasTime, true);
   assert.equal(cased.text, "стрижка");
+
+  const doNotForgetCommand = getKeywordCommand(
+    "не забыть завтра в 10 отправить отчет",
+  );
+  assert.equal(doNotForgetCommand?.kind, "reminder");
+  const doNotForget = parseReminderCommand(doNotForgetCommand.text);
+  assert.equal(doNotForget.hasDate, true);
+  assert.equal(doNotForget.hasTime, true);
+  assert.equal(doNotForget.text, "отправить отчет");
 });
 
 test("ordinary and ambiguous messages are not auto-created", () => {

@@ -52,6 +52,11 @@ export function getKeywordCommand(message: string): KeywordCommand | null {
     },
     {
       kind: "note",
+      pattern:
+        /^(?:сохрани|сохранить|запиши|записать)\s+(?:эту\s+)?(?:мысль|идею|информацию)(?=\s|[:：-]|$)[\s:：-]*/i,
+    },
+    {
+      kind: "note",
       pattern: /^запиши(?:\s+(?:как\s+)?заметку)?(?=\s|[:：-]|$)[\s:：-]*/i,
     },
     {
@@ -69,6 +74,10 @@ export function getKeywordCommand(message: string): KeywordCommand | null {
     {
       kind: "reminder",
       pattern: /^напоминание(?=\s|[:：-]|$)[\s:：-]*/i,
+    },
+    {
+      kind: "reminder",
+      pattern: /^не\s+забыть(?=\s|[:：-]|$)[\s:：-]*/i,
     },
     {
       kind: "list",
@@ -118,6 +127,26 @@ export function parseListCommand(text: string): ParsedList | null {
   } else if (/^купить(?=\s|$)/i.test(source)) {
     title = "Покупки";
     itemsSource = source.replace(/^купить(?=\s|$)/i, "");
+  } else {
+    const productList = /^(продукты|покупки)\s+(.+)$/i.exec(source);
+    if (productList) {
+      title = capitalizeTitle(productList[1]);
+      itemsSource = productList[2].trim().replace(/\s+/g, ", ");
+    } else {
+      const actionVerbs =
+        "(?:открыть|показать|проверить|подготовить|запустить|продемонстрировать)";
+      const checklist = new RegExp(
+        `^для\\s+(.+?)\\s+(${actionVerbs}(?=\\s|$).+)$`,
+        "i",
+      ).exec(source);
+      if (checklist) {
+        title = `Для ${compact(checklist[1])}`;
+        itemsSource = checklist[2].replace(
+          new RegExp(`\\s+(?=${actionVerbs}(?=\\s|$))`, "gi"),
+          ", ",
+        );
+      }
+    }
   }
 
   const items = itemsSource

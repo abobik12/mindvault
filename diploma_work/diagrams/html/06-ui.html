@@ -1,0 +1,30 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<title>Структура пользовательского интерфейса</title>
+<style>
+  body { margin: 0; background: #f8fafc; }
+  .wrap { width: 1180px; margin: 0 auto; padding: 28px 0; }
+  svg { background: #ffffff; border: 1px solid #e2e8f0; box-shadow: 0 12px 30px rgba(15,23,42,.08); }
+</style>
+</head>
+<body>
+<div class="wrap">
+<svg width="1180" height="680" viewBox="0 0 1180 680" xmlns="http://www.w3.org/2000/svg">
+<defs>
+  <marker id="arrow" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto" markerUnits="strokeWidth">
+    <path d="M0,0 L0,6 L9,3 z" fill="#64748b"/>
+  </marker>
+</defs>
+<text x="590" y="42" text-anchor="middle" font-family="Arial" font-size="24" font-weight="700" fill="#111827"><tspan x="590" dy="0">Структура пользовательского интерфейса</tspan></text>
+<rect x="80" y="110" width="220" height="430" rx="14" fill="#eff6ff" stroke="#93c5fd" stroke-width="2"/><text x="190" y="143" text-anchor="middle" font-family="Arial" font-size="17" font-weight="600" fill="#0f172a"><tspan x="190" dy="0">Sidebar</tspan><tspan x="190" dy="22">навигация</tspan><tspan x="190" dy="22">папки</tspan><tspan x="190" dy="22">профиль</tspan></text>
+<rect x="360" y="110" width="700" height="90" rx="14" fill="#f8fafc" stroke="#94a3b8" stroke-width="2"/><text x="710" y="143" text-anchor="middle" font-family="Arial" font-size="16" font-weight="600" fill="#0f172a"><tspan x="710" dy="0">Верхняя область</tspan><tspan x="710" dy="21">заголовок текущего раздела, фильтры, основные действия</tspan></text>
+<rect x="360" y="235" width="700" height="220" rx="14" fill="#f0fdf4" stroke="#86efac" stroke-width="2"/><text x="710" y="268" text-anchor="middle" font-family="Arial" font-size="16" font-weight="600" fill="#0f172a"><tspan x="710" dy="0">Рабочая область</tspan><tspan x="710" dy="21">чат, карточки файлов, заметок, списков и напоминаний</tspan><tspan x="710" dy="21">единый стиль карточек и действий</tspan></text>
+<rect x="360" y="490" width="700" height="80" rx="14" fill="#fff7ed" stroke="#fdba74" stroke-width="2"/><text x="710" y="523" text-anchor="middle" font-family="Arial" font-size="16" font-weight="600" fill="#0f172a"><tspan x="710" dy="0">Нижняя панель чата</tspan><tspan x="710" dy="21">ввод сообщения, выбор команды, вложения, отправка</tspan></text>
+<line x1="300" y1="320" x2="360" y2="320" stroke="#64748b" stroke-width="2.2" marker-end="url(#arrow)"/><text x="330" y="312" text-anchor="middle" font-family="Arial" font-size="13" font-weight="400" fill="#475569"><tspan x="330" dy="0">выбор раздела</tspan></text>
+<text x="190" y="585" text-anchor="middle" font-family="Arial" font-size="15" font-weight="400" fill="#475569"><tspan x="190" dy="0">На мобильном экране боковая панель</tspan><tspan x="190" dy="20">заменяется компактным меню</tspan></text>
+</svg>
+</div>
+</body>
+</html>

@@ -1,0 +1,32 @@
+<svg width="1180" height="760" viewBox="0 0 1180 760" xmlns="http://www.w3.org/2000/svg">
+<rect width="1180" height="760" fill="#ffffff"/>
+<defs>
+  <marker id="arrow" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto" markerUnits="strokeWidth">
+    <path d="M0,0 L0,6 L9,3 z" fill="#64748b"/>
+  </marker>
+</defs>
+<text x="590" y="42" text-anchor="middle" font-family="Arial" font-size="24" font-weight="700" fill="#111827"><tspan x="590" dy="0">Timeline обработки пользовательского сообщения</tspan></text>
+<text x="95" y="105" text-anchor="middle" font-family="Arial" font-size="18" font-weight="700" fill="#2563eb"><tspan x="95" dy="0">1</tspan></text>
+<text x="95" y="138" text-anchor="middle" font-family="Arial" font-size="14" font-weight="400" fill="#111827"><tspan x="95" dy="0">Открытие</tspan><tspan x="95" dy="19">приложения</tspan></text>
+<text x="245" y="105" text-anchor="middle" font-family="Arial" font-size="18" font-weight="700" fill="#2563eb"><tspan x="245" dy="0">2</tspan></text>
+<text x="245" y="138" text-anchor="middle" font-family="Arial" font-size="14" font-weight="400" fill="#111827"><tspan x="245" dy="0">Загрузка</tspan><tspan x="245" dy="19">данных</tspan></text>
+<text x="395" y="105" text-anchor="middle" font-family="Arial" font-size="18" font-weight="700" fill="#2563eb"><tspan x="395" dy="0">3</tspan></text>
+<text x="395" y="138" text-anchor="middle" font-family="Arial" font-size="14" font-weight="400" fill="#111827"><tspan x="395" dy="0">Отправка</tspan><tspan x="395" dy="19">сообщения</tspan></text>
+<text x="545" y="105" text-anchor="middle" font-family="Arial" font-size="18" font-weight="700" fill="#2563eb"><tspan x="545" dy="0">4</tspan></text>
+<text x="545" y="138" text-anchor="middle" font-family="Arial" font-size="14" font-weight="400" fill="#111827"><tspan x="545" dy="0">Запрос</tspan><tspan x="545" dy="19">на backend</tspan></text>
+<text x="695" y="105" text-anchor="middle" font-family="Arial" font-size="18" font-weight="700" fill="#2563eb"><tspan x="695" dy="0">5</tspan></text>
+<text x="695" y="138" text-anchor="middle" font-family="Arial" font-size="14" font-weight="400" fill="#111827"><tspan x="695" dy="0">Определение</tspan><tspan x="695" dy="19">намерения</tspan></text>
+<text x="845" y="105" text-anchor="middle" font-family="Arial" font-size="18" font-weight="700" fill="#2563eb"><tspan x="845" dy="0">6</tspan></text>
+<text x="845" y="138" text-anchor="middle" font-family="Arial" font-size="14" font-weight="400" fill="#111827"><tspan x="845" dy="0">Действие</tspan><tspan x="845" dy="19">в БД</tspan></text>
+<text x="995" y="105" text-anchor="middle" font-family="Arial" font-size="18" font-weight="700" fill="#2563eb"><tspan x="995" dy="0">7</tspan></text>
+<text x="995" y="138" text-anchor="middle" font-family="Arial" font-size="14" font-weight="400" fill="#111827"><tspan x="995" dy="0">Ответ</tspan><tspan x="995" dy="19">ассистента</tspan></text>
+<text x="1090" y="105" text-anchor="middle" font-family="Arial" font-size="18" font-weight="700" fill="#2563eb"><tspan x="1090" dy="0">8</tspan></text>
+<text x="1090" y="138" text-anchor="middle" font-family="Arial" font-size="14" font-weight="400" fill="#111827"><tspan x="1090" dy="0">Обновление</tspan><tspan x="1090" dy="19">UI</tspan></text>
+<line x1="95" y1="220" x2="1090" y2="220" stroke="#94a3b8" stroke-width="4"/>
+<circle cx="95" cy="220" r="12" fill="#2563eb"/><circle cx="245" cy="220" r="12" fill="#2563eb"/><circle cx="395" cy="220" r="12" fill="#2563eb"/><circle cx="545" cy="220" r="12" fill="#2563eb"/><circle cx="695" cy="220" r="12" fill="#2563eb"/><circle cx="845" cy="220" r="12" fill="#2563eb"/><circle cx="995" cy="220" r="12" fill="#2563eb"/><circle cx="1090" cy="220" r="12" fill="#2563eb"/>
+<rect x="70" y="300" width="250" height="110" rx="14" fill="#f0fdf4" stroke="#86efac" stroke-width="2"/><text x="195" y="333" text-anchor="middle" font-family="Arial" font-size="15" font-weight="600" fill="#0f172a"><tspan x="195" dy="0">Frontend</tspan><tspan x="195" dy="20">формирует payload</tspan><tspan x="195" dy="20">прикладывает файлы</tspan></text>
+<rect x="465" y="300" width="250" height="110" rx="14" fill="#fff7ed" stroke="#fdba74" stroke-width="2"/><text x="590" y="333" text-anchor="middle" font-family="Arial" font-size="15" font-weight="600" fill="#0f172a"><tspan x="590" dy="0">Backend</tspan><tspan x="590" dy="20">классификация</tspan><tspan x="590" dy="20">проверка прав</tspan></text>
+<rect x="835" y="300" width="250" height="110" rx="14" fill="#eff6ff" stroke="#93c5fd" stroke-width="2"/><text x="960" y="333" text-anchor="middle" font-family="Arial" font-size="15" font-weight="600" fill="#0f172a"><tspan x="960" dy="0">Результат</tspan><tspan x="960" dy="20">запись сообщения</tspan><tspan x="960" dy="20">обновление экрана</tspan></text>
+<line x1="320" y1="355" x2="465" y2="355" stroke="#64748b" stroke-width="2.2" marker-end="url(#arrow)"/><text x="392.5" y="347" text-anchor="middle" font-family="Arial" font-size="13" font-weight="400" fill="#475569"><tspan x="392.5" dy="0">REST</tspan></text>
+<line x1="715" y1="355" x2="835" y2="355" stroke="#64748b" stroke-width="2.2" marker-end="url(#arrow)"/><text x="775" y="347" text-anchor="middle" font-family="Arial" font-size="13" font-weight="400" fill="#475569"><tspan x="775" dy="0">SSE/JSON</tspan></text>
+</svg>

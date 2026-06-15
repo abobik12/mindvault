@@ -255,44 +255,66 @@ async function* callOpenAiCompletionStream(input: GenerateContentInput): AsyncGe
   const decoder = new TextDecoder("utf-8");
   let buffer = "";
 
+  const parseEvent = (event: string): string[] => {
+    const texts: string[] = [];
+    for (const line of event.split("\n")) {
+      if (!line.startsWith("data:")) continue;
+      const payload = line.slice(5).trim();
+      if (!payload || payload === "[DONE]") continue;
+
+      let parsed: any;
+      try {
+        parsed = JSON.parse(payload);
+      } catch {
+        continue;
+      }
+      if (parsed?.error) {
+        const message =
+          typeof parsed.error?.message === "string"
+            ? parsed.error.message
+            : "Поток AI завершился с ошибкой.";
+        throw new Error(message);
+      }
+
+      const chunkContent = parsed?.choices?.[0]?.delta?.content;
+      if (typeof chunkContent === "string" && chunkContent.length > 0) {
+        texts.push(chunkContent);
+        continue;
+      }
+      if (Array.isArray(chunkContent)) {
+        for (const part of chunkContent) {
+          const text =
+            part && typeof part === "object"
+              ? (part.text as string | undefined)
+              : undefined;
+          if (typeof text === "string" && text.length > 0) texts.push(text);
+        }
+      }
+    }
+    return texts;
+  };
+
   while (true) {
     const { value, done } = await reader.read();
-    if (done) break;
+    if (done) {
+      buffer += decoder.decode();
+      break;
+    }
 
-    buffer += decoder.decode(value, { stream: true });
+    buffer += decoder.decode(value, { stream: true }).replace(/\r\n/g, "\n");
     const events = buffer.split("\n\n");
     buffer = events.pop() ?? "";
 
     for (const event of events) {
-      const lines = event.split("\n");
-      for (const line of lines) {
-        if (!line.startsWith("data: ")) continue;
-        const payload = line.slice(6).trim();
-
-        if (!payload || payload === "[DONE]") continue;
-
-        let parsed: any;
-        try {
-          parsed = JSON.parse(payload);
-        } catch {
-          continue;
-        }
-
-        const chunkContent = parsed?.choices?.[0]?.delta?.content;
-        if (typeof chunkContent === "string" && chunkContent.length > 0) {
-          yield { text: chunkContent };
-          continue;
-        }
-
-        if (Array.isArray(chunkContent)) {
-          for (const part of chunkContent) {
-            const text = part && typeof part === "object" ? (part.text as string | undefined) : undefined;
-            if (typeof text === "string" && text.length > 0) {
-              yield { text };
-            }
-          }
-        }
+      for (const text of parseEvent(event)) {
+        yield { text };
       }
+    }
+  }
+
+  if (buffer.trim()) {
+    for (const text of parseEvent(buffer.replace(/\r\n/g, "\n"))) {
+      yield { text };
     }
   }
 }

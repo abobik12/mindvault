@@ -14,119 +14,121 @@ type ClassifyAssistantIntentParams = {
   message: string;
   folderNames: string[];
   model: string;
+  context?: string;
 };
 
-function buildClassifierPrompt(message: string, folderNames: string[]) {
+export function buildClassifierPrompt(
+  message: string,
+  folderNames: string[],
+  context = "",
+) {
   const now = getCurrentMoscowDateTimeForModel();
   const folders = folderNames.length > 0 ? folderNames.join(", ") : "нет папок";
 
-  return `Ты классификатор команд для MindVault. Верни только один JSON-объект без markdown.
+  return `Ты — модуль понимания естественного языка MindVault.
+Верни только один валидный JSON-объект без markdown и пояснений.
 
 Текущее московское время: ${now}.
 Папки пользователя: ${folders}.
+${context}
 
-Разрешенные intent:
-create_note, create_list, create_reminder, search_items, move_item_to_folder,
-create_folder, rename_folder, delete_item, chat_general, clarify.
+Допустимые intent:
+create_note, create_list, create_reminder, update_note, update_list,
+update_reminder, delete_item, move_item_to_folder, search_items,
+answer_from_sources, create_folder, rename_folder, chat_general, clarify, cancel.
 
-Общие обязательные поля:
-- intent: одна из строк выше;
-- confidence: число от 0 до 1;
-- needsConfirmation: boolean;
-- data: объект согласно intent.
+Обязательные поля:
+- intent: одна строка из списка;
+- data: объект согласно intent;
+- memory: необязательный объект {"facts":[...]}.
 
-Правила:
-- Не придумывай отсутствующие имена, содержимое, папки или объекты.
-- Обычный разговор, вопрос, совет или обсуждение без просьбы изменить MindVault — chat_general.
-- "Сохрани идею", "запиши мысль", "зафиксируй" — create_note.
-- Для списка верни непустой массив items.
-- Для напоминания верни date в YYYY-MM-DD и time в HH:mm. Если время не указано, используй 09:00.
-- Если год не указан, выбери ближайшую будущую дату относительно текущего московского времени.
-- Удаление, перемещение и переименование всегда имеют needsConfirmation=true.
-- Если команда двусмысленна, данных недостаточно или уверенность ниже 0.82 — intent=clarify и задай короткий вопрос в data.question.
-- Не утверждай, что действие выполнено: ты только классифицируешь.
+Принципы:
+- Понимай разговорный русский, опечатки, ссылки на недавний контекст и привычные названия.
+- Выбирай наиболее логичное действие по смыслу и персональному контексту.
+- Не проси подтверждение обратимого действия: backend выполнит его и предложит отмену.
+- clarify используй только при бессмыслице, взаимоисключающих указаниях или объективной невозможности определить цель. Верни один короткий вопрос, без кнопок.
+- Обычный вопрос, совет, обсуждение или фраза о планах без просьбы изменить MindVault — chat_general.
+- Вопрос по сохранённым данным — answer_from_sources.
+- "сохрани идею", "запиши мысль", "зафиксируй" — create_note.
+- Фразы "мне нужно", "надо", "планирую" сами по себе не создают напоминание.
+- Напоминание создавай при явной просьбе напомнить или поставить напоминание. Время по умолчанию 09:00.
+- Для отметки пункта списка выполненным используй completeItems, а не removeItems.
+- Если несколько объектов похожи, используй недавний контекст и точные совпадения. Уточняй только когда варианты действительно равноценны.
+- Не утверждай, что действие уже выполнено: ты только формируешь команду.
 
 Формы data:
 - create_note: {"title": string, "content": string, "folderName": string|null}
 - create_list: {"title": string, "items": string[], "folderName": string|null}
-- create_reminder: {"title": string, "content": string, "date": string, "time": string, "folderName": string|null}
+- create_reminder: {"title": string, "content": string, "date": "YYYY-MM-DD", "time": "HH:mm", "folderName": string|null}
+- update_note: {"targetQuery": string, "title"?: string, "content"?: string}
+- update_list: {"targetQuery": string, "title"?: string, "addItems"?: string[], "removeItems"?: string[], "completeItems"?: string[], "reopenItems"?: string[]}
+- update_reminder: {"targetQuery": string, "title"?: string, "content"?: string, "date"?: "YYYY-MM-DD", "time"?: "HH:mm"}
 - search_items: {"query": string, "types"?: ("note"|"list"|"reminder"|"file"|"folder")[]}
+- answer_from_sources: {"query": string, "types"?: ("note"|"list"|"reminder"|"file"|"folder")[]}
 - move_item_to_folder: {"itemQuery": string, "itemType"?: "note"|"list"|"reminder"|"file", "folderName": string}
 - create_folder: {"name": string}
 - rename_folder: {"folderName": string, "newName": string}
 - delete_item: {"itemQuery": string, "itemType"?: "note"|"list"|"reminder"|"file"|"folder"}
 - chat_general: {}
+- cancel: {}
 - clarify: {"question": string}
 
-Примеры:
-Сообщение: "сохрани идею: добавить раздел про ИИ"
-Ответ: {"intent":"create_note","confidence":0.99,"needsConfirmation":false,"data":{"title":"Добавить раздел про ИИ","content":"Добавить раздел про ИИ","folderName":null}}
-
-Сообщение: "запиши мысль о новой структуре диплома"
-Ответ: {"intent":"create_note","confidence":0.96,"needsConfirmation":false,"data":{"title":"Новая структура диплома","content":"Мысль о новой структуре диплома","folderName":null}}
-
-Сообщение: "как лучше подготовиться к защите диплома?"
-Ответ: {"intent":"chat_general","confidence":0.99,"needsConfirmation":false,"data":{}}
+Память:
+- Добавляй memory.facts только для явно устойчивых сведений: "запомни", "обычно", "всегда", "предпочитаю", "я называю", устойчивый проект или правило.
+- Не сохраняй разовую задачу, случайную реплику или содержание обычного вопроса.
+- fact: {"category":"person"|"alias"|"slang"|"preference"|"project"|"habit","key":string,"value":string}
 
 Сообщение пользователя:
 ${JSON.stringify(message)}`;
+}
+
+export function parseAssistantIntentResponse(text: string): IntentClassificationResult {
+  const trimmed = text.trim();
+  if (!trimmed) {
+    return { status: "invalid", reason: "empty_response" };
+  }
+
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(trimmed);
+  } catch {
+    return { status: "invalid", reason: "invalid_json" };
+  }
+
+  const validation = assistantIntentSchema.safeParse(parsed);
+  if (!validation.success) {
+    return {
+      status: "invalid",
+      reason: validation.error.issues
+        .map((issue) => `${issue.path.join(".")}: ${issue.message}`)
+        .join("; "),
+    };
+  }
+  return { status: "valid", value: validation.data };
 }
 
 export async function classifyAssistantIntent({
   message,
   folderNames,
   model,
+  context,
 }: ClassifyAssistantIntentParams): Promise<IntentClassificationResult> {
-  let response;
   try {
-    response = await ai.models.generateContent({
+    const response = await ai.models.generateContent({
       model,
       contents: [
         {
           role: "user",
-          parts: [{ text: buildClassifierPrompt(message, folderNames) }],
+          parts: [{ text: buildClassifierPrompt(message, folderNames, context) }],
         },
       ],
-      config: {
-        responseMimeType: "application/json",
-      },
+      config: { responseMimeType: "application/json" },
     });
+    return parseAssistantIntentResponse(response.text ?? "");
   } catch (error) {
     return {
       status: "unavailable",
-      reason: error instanceof Error ? error.message : "AI provider unavailable",
+      reason: error instanceof Error ? error.message : "provider_unavailable",
     };
   }
-
-  const text = response.text?.trim();
-  if (!text) {
-    return { status: "invalid", reason: "Classifier returned an empty response" };
-  }
-
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(text);
-  } catch {
-    return { status: "invalid", reason: "Classifier returned invalid JSON" };
-  }
-
-  const validation = assistantIntentSchema.safeParse(parsed);
-  if (!validation.success) {
-    const receivedIntent =
-      parsed &&
-      typeof parsed === "object" &&
-      "intent" in parsed &&
-      typeof parsed.intent === "string"
-        ? ` Получен intent: ${parsed.intent}.`
-        : "";
-    return {
-      status: "invalid",
-      reason:
-        validation.error.issues
-          .map((issue) => `${issue.path.join(".")}: ${issue.message}`)
-          .join("; ") + receivedIntent,
-    };
-  }
-
-  return { status: "valid", value: validation.data };
 }

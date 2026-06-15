@@ -7,6 +7,8 @@ export const conversations = pgTable("conversations", {
   id: serial("id").primaryKey(),
   userId: integer("user_id").notNull().references(() => usersTable.id, { onDelete: "cascade" }),
   title: text("title").notNull().default("New Chat"),
+  summary: text("summary"),
+  summaryThroughMessageId: integer("summary_through_message_id"),
   createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
   updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull().$onUpdate(() => new Date()),
 });

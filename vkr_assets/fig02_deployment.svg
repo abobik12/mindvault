@@ -1,0 +1,54 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" width="1400" height="860" viewBox="0 0 1400 860">
+  <defs>
+    <marker id="arrow" viewBox="0 0 12 12" refX="10" refY="6" markerWidth="10" markerHeight="10" orient="auto-start-reverse">
+      <path d="M 0 0 L 12 6 L 0 12 z" fill="#374151"/>
+    </marker>
+    <style>
+      .bg { fill: #ffffff; }
+      .title { font: 700 30px Arial, sans-serif; fill: #111827; }
+      .subtitle { font: 400 18px Arial, sans-serif; fill: #4b5563; }
+      .box { fill: #f8fafc; stroke: #374151; stroke-width: 2; rx: 12; }
+      .box2 { fill: #eef6ff; stroke: #374151; stroke-width: 2; rx: 12; }
+      .box3 { fill: #f5f7eb; stroke: #374151; stroke-width: 2; rx: 12; }
+      .box4 { fill: #fff7ed; stroke: #374151; stroke-width: 2; rx: 12; }
+      .label { font: 700 20px Arial, sans-serif; fill: #111827; }
+      .text { font: 400 17px Arial, sans-serif; fill: #1f2937; }
+      .small { font: 400 15px Arial, sans-serif; fill: #374151; }
+      .tiny { font: 400 14px Arial, sans-serif; fill: #4b5563; }
+      .arrow { stroke: #374151; stroke-width: 2.2; fill: none; marker-end: url(#arrow); }
+      .line { stroke: #6b7280; stroke-width: 1.8; fill: none; }
+      .note { fill: #ffffff; stroke: #9ca3af; stroke-width: 1.5; rx: 10; }
+    </style>
+  </defs>
+  <rect class="bg" x="0" y="0" width="1400" height="860"/>
+<text x="44" y="50" class="title"><tspan x="44" dy="0">Диаграмма развертывания приложения MindVault</tspan></text><text x="44" y="82" class="subtitle"><tspan x="44" dy="0">Локальный / демонстрационный запуск через Docker Compose, без production HTTPS/nginx</tspan></text>
+  <rect class="box" x="60" y="150" width="260" height="125" rx="12"/>
+  <text x="78" y="181" class="label"><tspan x="78" dy="0">Пользователь</tspan></text>
+  <text x="78" y="209" class="text"><tspan x="78" dy="0">браузер</tspan><tspan x="78" dy="20">http://localhost:18174</tspan></text>
+  <rect class="box2" x="420" y="130" width="310" height="190" rx="12"/>
+  <text x="438" y="161" class="label"><tspan x="438" dy="0">Контейнер web</tspan></text>
+  <text x="438" y="189" class="text"><tspan x="438" dy="0">@workspace/mindvault</tspan><tspan x="438" dy="20">Vite dev server</tspan><tspan x="438" dy="20">порт: 18174</tspan><tspan x="438" dy="20">API_PROXY_TARGET=api:8080</tspan></text>
+  <rect class="box3" x="825" y="130" width="310" height="190" rx="12"/>
+  <text x="843" y="161" class="label"><tspan x="843" dy="0">Контейнер api</tspan></text>
+  <text x="843" y="189" class="text"><tspan x="843" dy="0">@workspace/api-server</tspan><tspan x="843" dy="20">Express server</tspan><tspan x="843" dy="20">порт: 8080</tspan><tspan x="843" dy="20">применяет db push</tspan></text>
+  <rect class="box4" x="825" y="460" width="310" height="180" rx="12"/>
+  <text x="843" y="491" class="label"><tspan x="843" dy="0">Контейнер db</tspan></text>
+  <text x="843" y="519" class="text"><tspan x="843" dy="0">PostgreSQL 16</tspan><tspan x="843" dy="20">порт: 5432</tspan><tspan x="843" dy="20">БД: mindvault</tspan><tspan x="843" dy="20">healthcheck pg_isready</tspan></text>
+  <rect class="box" x="1180" y="500" width="240" height="110" rx="12"/>
+  <text x="1198" y="531" class="label"><tspan x="1198" dy="0">Volume</tspan></text>
+  <text x="1198" y="559" class="text"><tspan x="1198" dy="0">pg_data</tspan><tspan x="1198" dy="20">данные PostgreSQL</tspan></text>
+  <rect class="box4" x="1180" y="170" width="240" height="120" rx="12"/>
+  <text x="1198" y="201" class="label"><tspan x="1198" dy="0">Внешний AI API</tspan></text>
+  <text x="1198" y="229" class="text"><tspan x="1198" dy="0">OpenAI / OpenRouter</tspan><tspan x="1198" dy="20">ключ через env</tspan></text>
+  <line class="arrow" x1="320" y1="212" x2="420" y2="212"/>
+  <rect class="note" x="278" y="186" width="184" height="28"/><text x="370" y="206" text-anchor="middle" class="tiny">HTTP 18174</text>
+  <line class="arrow" x1="730" y1="212" x2="825" y2="212"/>
+  <rect class="note" x="685.5" y="186" width="184" height="28"/><text x="777.5" y="206" text-anchor="middle" class="tiny">proxy /api</text>
+  <line class="arrow" x1="980" y1="320" x2="980" y2="460"/>
+  <rect class="note" x="888" y="364" width="184" height="28"/><text x="980" y="384" text-anchor="middle" class="tiny">DATABASE_URL</text>
+  <line class="arrow" x1="1135" y1="550" x2="1180" y2="550"/>
+  <rect class="note" x="1065.5" y="524" width="184" height="28"/><text x="1157.5" y="544" text-anchor="middle" class="tiny">volume</text>
+  <line class="arrow" x1="1135" y1="220" x2="1180" y2="220"/>
+  <rect class="note" x="1065.5" y="194" width="184" height="28"/><text x="1157.5" y="214" text-anchor="middle" class="tiny">AI request</text><rect class="note" x="120" y="700" width="1160" height="76" rx="10"/>
+  <text x="150" y="730" class="small"><tspan x="150" dy="0">Примечание: схема отражает локальный запуск из docker-compose.yml. Production-деплой, HTTPS и nginx не показаны, так как в проекте они не реализованы.</tspan></text></svg>

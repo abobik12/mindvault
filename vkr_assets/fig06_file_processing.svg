@@ -1,0 +1,98 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" width="1400" height="980" viewBox="0 0 1400 980">
+  <defs>
+    <marker id="arrow" viewBox="0 0 12 12" refX="10" refY="6" markerWidth="10" markerHeight="10" orient="auto-start-reverse">
+      <path d="M 0 0 L 12 6 L 0 12 z" fill="#374151"/>
+    </marker>
+    <style>
+      .bg { fill: #ffffff; }
+      .title { font: 700 30px Arial, sans-serif; fill: #111827; }
+      .subtitle { font: 400 18px Arial, sans-serif; fill: #4b5563; }
+      .box { fill: #f8fafc; stroke: #374151; stroke-width: 2; rx: 12; }
+      .box2 { fill: #eef6ff; stroke: #374151; stroke-width: 2; rx: 12; }
+      .box3 { fill: #f5f7eb; stroke: #374151; stroke-width: 2; rx: 12; }
+      .box4 { fill: #fff7ed; stroke: #374151; stroke-width: 2; rx: 12; }
+      .label { font: 700 20px Arial, sans-serif; fill: #111827; }
+      .text { font: 400 17px Arial, sans-serif; fill: #1f2937; }
+      .small { font: 400 15px Arial, sans-serif; fill: #374151; }
+      .tiny { font: 400 14px Arial, sans-serif; fill: #4b5563; }
+      .arrow { stroke: #374151; stroke-width: 2.2; fill: none; marker-end: url(#arrow); }
+      .line { stroke: #6b7280; stroke-width: 1.8; fill: none; }
+      .note { fill: #ffffff; stroke: #9ca3af; stroke-width: 1.5; rx: 10; }
+    </style>
+  </defs>
+  <rect class="bg" x="0" y="0" width="1400" height="980"/>
+<text x="44" y="50" class="title"><tspan x="44" dy="0">Схема загрузки и обработки файла</tspan></text><text x="44" y="82" class="subtitle"><tspan x="44" dy="0">Файл сохраняется как item типа file; текст извлекается только для поддерживаемых форматов</tspan></text>
+  <rect class="box" x="60" y="130" width="310" height="120" rx="12"/>
+  <circle cx="90" cy="162" r="18" fill="#ffffff" stroke="#374151" stroke-width="2"/>
+  <text x="90" y="169" text-anchor="middle" class="label">1</text>
+  <text x="118" y="162" class="label"><tspan x="118" dy="0">Выбор файла</tspan></text>
+  <text x="80" y="194" class="text"><tspan x="80" dy="0">пользователь выбирает</tspan><tspan x="80" dy="20">файл в интерфейсе</tspan></text>
+  <rect class="box2" x="485" y="130" width="330" height="120" rx="12"/>
+  <circle cx="515" cy="162" r="18" fill="#ffffff" stroke="#374151" stroke-width="2"/>
+  <text x="515" y="169" text-anchor="middle" class="label">2</text>
+  <text x="543" y="162" class="label"><tspan x="543" dy="0">Frontend</tspan></text>
+  <text x="505" y="194" class="text"><tspan x="505" dy="0">чтение файла</tspan><tspan x="505" dy="20">base64 + metadata</tspan></text>
+  <rect class="box3" x="930" y="130" width="330" height="120" rx="12"/>
+  <circle cx="960" cy="162" r="18" fill="#ffffff" stroke="#374151" stroke-width="2"/>
+  <text x="960" y="169" text-anchor="middle" class="label">3</text>
+  <text x="988" y="162" class="label"><tspan x="988" dy="0">/api/items/upload</tspan></text>
+  <text x="950" y="194" class="text"><tspan x="950" dy="0">отправка filename,</tspan><tspan x="950" dy="20">mimeType, fileSize, fileData</tspan></text>
+  <rect class="box3" x="930" y="330" width="330" height="120" rx="12"/>
+  <circle cx="960" cy="362" r="18" fill="#ffffff" stroke="#374151" stroke-width="2"/>
+  <text x="960" y="369" text-anchor="middle" class="label">4</text>
+  <text x="988" y="362" class="label"><tspan x="988" dy="0">Backend</tspan></text>
+  <text x="950" y="394" class="text"><tspan x="950" dy="0">сохранение metadata</tspan><tspan x="950" dy="20">проверка folderId</tspan></text>
+  <rect class="box" x="70" y="520" width="285" height="120" rx="12"/>
+  <circle cx="100" cy="552" r="18" fill="#ffffff" stroke="#374151" stroke-width="2"/>
+  <text x="100" y="559" text-anchor="middle" class="label">5</text>
+  <text x="128" y="552" class="label"><tspan x="128" dy="0">Текстовые файлы</tspan></text>
+  <text x="90" y="584" class="text"><tspan x="90" dy="0">TXT/MD/CSV/JSON</tspan><tspan x="90" dy="20">XML/YAML/HTML/CSS/JS/TS</tspan></text>
+  <rect class="box" x="405" y="520" width="250" height="120" rx="12"/>
+  <circle cx="435" cy="552" r="18" fill="#ffffff" stroke="#374151" stroke-width="2"/>
+  <text x="435" y="559" text-anchor="middle" class="label">6</text>
+  <text x="463" y="552" class="label"><tspan x="463" dy="0">PDF</tspan></text>
+  <text x="425" y="584" class="text"><tspan x="425" dy="0">извлечение текста</tspan><tspan x="425" dy="20">через pdf-parse</tspan></text>
+  <rect class="box" x="705" y="520" width="250" height="120" rx="12"/>
+  <circle cx="735" cy="552" r="18" fill="#ffffff" stroke="#374151" stroke-width="2"/>
+  <text x="735" y="559" text-anchor="middle" class="label">7</text>
+  <text x="763" y="552" class="label"><tspan x="763" dy="0">DOCX</tspan></text>
+  <text x="725" y="584" class="text"><tspan x="725" dy="0">извлечение текста</tspan><tspan x="725" dy="20">через mammoth</tspan></text>
+  <rect class="box4" x="1000" y="520" width="310" height="120" rx="12"/>
+  <circle cx="1030" cy="552" r="18" fill="#ffffff" stroke="#374151" stroke-width="2"/>
+  <text x="1030" y="559" text-anchor="middle" class="label">8</text>
+  <text x="1058" y="552" class="label"><tspan x="1058" dy="0">Иной формат</tspan></text>
+  <text x="1020" y="584" class="text"><tspan x="1020" dy="0">metadata-only</tspan><tspan x="1020" dy="20">без OCR</tspan></text>
+  <rect class="box3" x="420" y="780" width="365" height="130" rx="12"/>
+  <circle cx="450" cy="812" r="18" fill="#ffffff" stroke="#374151" stroke-width="2"/>
+  <text x="450" y="819" text-anchor="middle" class="label">9</text>
+  <text x="478" y="812" class="label"><tspan x="478" dy="0">Создание items.file</tspan></text>
+  <text x="440" y="844" class="text"><tspan x="440" dy="0">type = file</tspan><tspan x="440" dy="20">content = extracted text</tspan><tspan x="440" dy="20">summary = extractionStatus</tspan></text>
+  <rect class="box2" x="870" y="780" width="330" height="130" rx="12"/>
+  <circle cx="900" cy="812" r="18" fill="#ffffff" stroke="#374151" stroke-width="2"/>
+  <text x="900" y="819" text-anchor="middle" class="label">10</text>
+  <text x="928" y="812" class="label"><tspan x="928" dy="0">Использование</tspan></text>
+  <text x="890" y="844" class="text"><tspan x="890" dy="0">поиск по тексту</tspan><tspan x="890" dy="20">контекст ассистента</tspan></text>
+  <line class="arrow" x1="370" y1="190" x2="485" y2="190"/>
+  
+  <line class="arrow" x1="815" y1="190" x2="930" y2="190"/>
+  
+  <line class="arrow" x1="1095" y1="250" x2="1095" y2="330"/>
+  
+  <polyline class="arrow" points="930,390 212,390 212,520"/>
+  <rect class="note" x="480" y="360" width="190" height="28"/><text x="575" y="380" text-anchor="middle" class="tiny">canAttemptTextExtraction</text>
+  <polyline class="arrow" points="1095,450 1095,500 530,500 530,520"/>
+  <rect class="note" x="720" y="470" width="190" height="28"/><text x="815" y="490" text-anchor="middle" class="tiny">PDF / DOCX / text</text>
+  <polyline class="arrow" points="1095,450 1095,520"/>
+  <rect class="note" x="1120" y="482" width="190" height="28"/><text x="1215" y="502" text-anchor="middle" class="tiny">unsupported</text>
+  <line class="arrow" x1="212" y1="640" x2="520" y2="780"/>
+  
+  <line class="arrow" x1="530" y1="640" x2="580" y2="780"/>
+  
+  <line class="arrow" x1="830" y1="640" x2="675" y2="780"/>
+  
+  <line class="arrow" x1="1155" y1="640" x2="785" y2="835"/>
+  
+  <line class="arrow" x1="785" y1="845" x2="870" y2="845"/>
+  <rect class="note" x="80" y="705" width="1220" height="50" rx="10"/>
+  <text x="110" y="737" class="small"><tspan x="110" dy="0">OCR не показан: распознавание текста на изображениях и сканах в проекте отсутствует.</tspan></text></svg>

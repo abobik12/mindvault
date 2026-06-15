@@ -1,4 +1,5 @@
 import { and, desc, eq } from "drizzle-orm";
+import { randomUUID } from "node:crypto";
 import { conversations, db, foldersTable, itemsTable, messages } from "@workspace/db";
 import { formatMoscowDateTime, parseReminderDateTime } from "../lib/time";
 import { logger } from "../lib/logger";
@@ -16,6 +17,10 @@ import {
   type KeywordCommand,
 } from "./command-parser";
 import type { AssistantIntent } from "./assistant-intent";
+import type {
+  AssistantActionButton,
+  PendingAssistantAction,
+} from "./assistant-contract";
 
 export type AssistantActionIntent =
   | "chat_general"
@@ -23,6 +28,7 @@ export type AssistantActionIntent =
   | "answer_about_user_content"
   | "create_note"
   | "create_list"
+  | "update_list"
   | "update_note"
   | "delete_note"
   | "delete_list"
@@ -32,6 +38,7 @@ export type AssistantActionIntent =
   | "search_reminders"
   | "search_files"
   | "answer_about_file"
+  | "answer_from_sources"
   | "move_item_to_folder"
   | "create_folder"
   | "rename_folder"
@@ -55,11 +62,16 @@ export type AssistantActionContext = {
     content?: string | null;
   } | null;
   suggestedActions?: Array<"save_note" | "save_reminder" | "create_list" | "ignore">;
-  pendingAction?: PendingAction;
+  pendingAction?: LegacyPendingAction | PendingAssistantAction;
+  actionButtons?: AssistantActionButton[];
   actionResult?: {
     success: boolean;
     action: string;
     error?: string;
+  };
+  undoAction?: {
+    id: string;
+    label: string;
   };
 };
 
@@ -74,7 +86,6 @@ export type AssistantActionResponse = {
   cleanedContent: string | null;
   suggestedFolder: string | null;
   tags: string[];
-  confidence: number;
   reminderAt: string | null;
   savedItem: Record<string, unknown> | null;
   suggestedActions: Array<"save_note" | "save_reminder" | "create_list" | "ignore">;
@@ -82,7 +93,7 @@ export type AssistantActionResponse = {
   message: string;
 };
 
-type PendingAction =
+type LegacyPendingAction =
   | {
       action: "delete_item";
       itemId: number;
@@ -130,11 +141,19 @@ const CREATE_REMINDER_RE = /(напомни|создай\s+напомин|пос
 const UPDATE_RE = /(измени|обнови|перенеси|переименуй|исправь)/i;
 const DELETE_RE = /(удали|удалить|сотри)/i;
 const CONFIRM_RE = /^(да|подтверждаю|удали|удаляй|очисти|очищай|точно|ок|хорошо)$/i;
-const CANCEL_RE = /^(нет|отмена|отмени|не надо|не удаляй|стоп|cancel)$/i;
+const CANCEL_RE = /^(нет|отмена|отмени|не надо|не удаляй|оставь|стоп|cancel)$/i;
+const EXPLICIT_REMINDER_REQUEST_RE =
+  /(напомни|напоминание|не\s+забыть|не\s+забудь|создай.{0,20}напомин|поставь.{0,20}напомин|добавь.{0,20}напомин)/i;
 const LEGACY_AUTO_SAVE_ENABLED = false;
 
 type AssistantItemType = "note" | "file" | "reminder" | "list";
 type SuggestedActionType = "save_note" | "save_reminder" | "create_list" | "ignore";
+export type ActionTarget = {
+  id: number;
+  type: AssistantItemType;
+  title: string;
+  score: number;
+};
 
 function baseResponse(intentType: AssistantActionIntent, message: string): AssistantActionResponse {
   return {
@@ -148,7 +167,6 @@ function baseResponse(intentType: AssistantActionIntent, message: string): Assis
     cleanedContent: null,
     suggestedFolder: null,
     tags: [],
-    confidence: 0.9,
     reminderAt: null,
     savedItem: null,
     suggestedActions: [],
@@ -180,14 +198,15 @@ function failureResponse(
   };
 }
 
-function chatResponse(): AssistantActionResponse {
+function chatResponse(
+  intentType: "chat_general" | "answer_from_sources" = "chat_general",
+): AssistantActionResponse {
   return {
-    ...baseResponse("chat_general", "Понял запрос. Отвечаю в чате без автоматического сохранения."),
+    ...baseResponse(intentType, "Понял запрос. Отвечаю в чате без автоматического сохранения."),
     handled: false,
     responseMode: "reply_only",
-    confidence: 0.65,
     assistantContext: {
-      intentType: "chat_general",
+      intentType,
       responseMode: "reply_only",
       assistantReply: "Понял запрос. Отвечаю в чате без автоматического сохранения.",
       savedItem: null,
@@ -475,6 +494,148 @@ function searchItems(items: ItemRecord[], query: string, type?: AssistantItemTyp
     .slice(0, 10);
 }
 
+export function findActionTargets({
+  items,
+  folders,
+  query,
+  type,
+  folderName,
+  dateHint,
+}: {
+  items: ItemRecord[];
+  folders: FolderRecord[];
+  query: string;
+  type?: AssistantItemType;
+  folderName?: string | null;
+  dateHint?: string | null;
+}): ActionTarget[] {
+  const normalizedQuery = normalizeText(query);
+  const terms = normalizedQuery
+    .split(/[^\p{L}\p{N}_-]+/u)
+    .filter((term) => term.length > 2);
+  const normalizedFolder = folderName ? normalizeText(folderName) : null;
+  const normalizedDate = dateHint ? normalizeText(dateHint) : null;
+
+  const scored = items
+    .filter((item) => item.status === "active" && (!type || item.type === type))
+    .map((item) => {
+      const title = normalizeText(itemTitle(item));
+      const content = normalizeText(
+        [item.content ?? "", item.summary ?? "", item.originalFilename ?? ""].join(" "),
+      );
+      const itemFolder = normalizeText(folderNameFor(item, folders) ?? "");
+      const reminderDate =
+        item.reminderAt?.toLocaleDateString("ru-RU", {
+          timeZone: "Europe/Moscow",
+          day: "numeric",
+          month: "long",
+          year: "numeric",
+        }) ?? "";
+
+      let score = 0;
+      if (title === normalizedQuery) score += 200;
+      else if (title.includes(normalizedQuery) || normalizedQuery.includes(title)) score += 120;
+      if (content.includes(normalizedQuery)) score += 80;
+      score += terms.reduce((sum, term) => {
+        if (title.includes(term)) return sum + 30;
+        if (content.includes(term)) return sum + 12;
+        return sum;
+      }, 0);
+      if (normalizedFolder && itemFolder.includes(normalizedFolder)) score += 50;
+      if (normalizedDate && normalizeText(reminderDate).includes(normalizedDate)) score += 40;
+
+      return {
+        id: item.id,
+        type: item.type,
+        title: itemTitle(item),
+        score,
+      };
+    })
+    .filter((target) => target.score > 0)
+    .sort((a, b) => b.score - a.score);
+
+  if (scored.length <= 1) return scored;
+  const topScore = scored[0]?.score ?? 0;
+  return scored.filter((target) => target.score >= Math.max(20, topScore * 0.55)).slice(0, 6);
+}
+
+function parseStoredListItems(content: string | null): Array<{
+  id: string;
+  text: string;
+  done: boolean;
+}> {
+  if (!content) return [];
+  try {
+    const parsed = JSON.parse(content) as {
+      kind?: string;
+      items?: Array<{ id?: string; text?: string; done?: boolean }>;
+    };
+    if (parsed.kind !== "todo-list" || !Array.isArray(parsed.items)) return [];
+    return parsed.items
+      .filter((entry) => typeof entry.text === "string" && entry.text.trim())
+      .map((entry, index) => ({
+        id: entry.id || `item-${Date.now()}-${index}`,
+        text: entry.text!.trim(),
+        done: entry.done === true,
+      }));
+  } catch {
+    return [];
+  }
+}
+
+function serializeStoredListItems(
+  items: Array<{ id: string; text: string; done: boolean }>,
+): string {
+  return JSON.stringify({ kind: "todo-list", items });
+}
+
+export function applyListItemUpdates(
+  listItems: Array<{ id: string; text: string; done: boolean }>,
+  updates: {
+    addItems?: string[];
+    removeItems?: string[];
+    completeItems?: string[];
+    reopenItems?: string[];
+  },
+) {
+  const removeTerms = (updates.removeItems ?? []).map(normalizeText);
+  const completeTerms = (updates.completeItems ?? []).map(normalizeText);
+  const reopenTerms = (updates.reopenItems ?? []).map(normalizeText);
+  const nextItems = listItems
+    .filter(
+      (entry) =>
+        !removeTerms.some((term) =>
+          normalizeText(entry.text).includes(term),
+        ),
+    )
+    .map((entry) => {
+      const normalized = normalizeText(entry.text);
+      if (completeTerms.some((term) => normalized.includes(term))) {
+        return { ...entry, done: true };
+      }
+      if (reopenTerms.some((term) => normalized.includes(term))) {
+        return { ...entry, done: false };
+      }
+      return entry;
+    });
+
+  for (const text of updates.addItems ?? []) {
+    if (
+      !nextItems.some(
+        (entry) => normalizeText(entry.text) === normalizeText(text),
+      )
+    ) {
+      nextItems.push({
+        id: `item-${Date.now()}-${nextItems.length}`,
+        text,
+        done: false,
+      });
+    }
+  }
+
+  return nextItems;
+}
+
 function extractSearchQuery(message: string): string {
   return compact(
     message
@@ -501,7 +662,7 @@ function listItemsMessage(title: string, items: ItemRecord[], folders: FolderRec
   ].join("\n");
 }
 
-async function getLatestPendingAction(conversationId: number | null | undefined): Promise<PendingAction | null> {
+async function getLatestPendingAction(conversationId: number | null | undefined): Promise<LegacyPendingAction | null> {
   if (!conversationId) return null;
   const rows = await db
     .select({ metadata: messages.metadata, role: messages.role })
@@ -521,14 +682,14 @@ async function getLatestPendingAction(conversationId: number | null | undefined)
     if (!row.metadata || typeof row.metadata !== "object") return null;
     const pendingAction = (row.metadata as Record<string, unknown>).pendingAction;
     if (pendingAction && typeof pendingAction === "object" && "action" in pendingAction) {
-      return pendingAction as PendingAction;
+      return pendingAction as LegacyPendingAction;
     }
     return null;
   }
   return null;
 }
 
-async function executePendingAction(userId: number, action: PendingAction, folders: FolderRecord[]): Promise<AssistantActionResponse> {
+async function executePendingAction(userId: number, action: LegacyPendingAction, folders: FolderRecord[]): Promise<AssistantActionResponse> {
   if (action.action === "create_reminder") {
     if (!action.reminderAt) {
       return withPending(
@@ -618,7 +779,7 @@ async function continuePendingReminderAction({
   folderId,
 }: {
   userId: number;
-  action: Extract<PendingAction, { action: "create_reminder" }>;
+  action: Extract<LegacyPendingAction, { action: "create_reminder" }>;
   content: string;
   folders: FolderRecord[];
   folderId?: number | null;
@@ -685,7 +846,7 @@ async function continuePendingReminderAction({
   );
 }
 
-function withPending(intent: AssistantActionIntent, message: string, pendingAction: PendingAction): AssistantActionResponse {
+function withPending(intent: AssistantActionIntent, message: string, pendingAction: LegacyPendingAction): AssistantActionResponse {
   return {
     ...baseResponse(intent, message),
     responseMode: "action_executed",
@@ -700,14 +861,119 @@ function withPending(intent: AssistantActionIntent, message: string, pendingActi
   };
 }
 
+function createPendingAssistantAction({
+  kind,
+  originalMessage,
+  intent,
+  possibleIntents,
+  targetCandidates,
+  payload,
+}: Omit<PendingAssistantAction, "id" | "status" | "createdAt" | "expiresAt">): PendingAssistantAction {
+  const createdAt = new Date();
+  return {
+    id: randomUUID(),
+    kind,
+    originalMessage,
+    intent,
+    possibleIntents,
+    targetCandidates,
+    payload,
+    status: "pending",
+    createdAt: createdAt.toISOString(),
+    expiresAt: new Date(createdAt.getTime() + 30 * 60 * 1000).toISOString(),
+  };
+}
+
+export function createStructuredPendingResponse({
+  intentType = "unknown_or_ambiguous",
+  message,
+  pendingAction,
+  buttons,
+  error = "selection_required",
+}: {
+  intentType?: AssistantActionIntent;
+  message: string;
+  pendingAction: PendingAssistantAction;
+  buttons: AssistantActionButton[];
+  error?: string;
+}): AssistantActionResponse {
+  return {
+    ...baseResponse(intentType, message),
+    responseMode: "suggest_actions",
+    assistantContext: {
+      intentType,
+      responseMode: "suggest_actions",
+      assistantReply: message,
+      savedItem: null,
+      pendingAction,
+      actionButtons: buttons,
+      actionResult: {
+        success: false,
+        action: pendingAction.intent ?? pendingAction.kind,
+        error,
+      },
+    },
+  };
+}
+
+export function createClarificationResponse(
+  message = "Уточните, пожалуйста, что нужно сделать.",
+): AssistantActionResponse {
+  return failureResponse(
+    "unknown_or_ambiguous",
+    message,
+    "clarification_required",
+  );
+}
+
+export function createCancelledResponse(): AssistantActionResponse {
+  return failureResponse(
+    "unknown_or_ambiguous",
+    "Действие отменено.",
+    "cancelled",
+  );
+}
+
 function withSuggestedActions(
   message: string,
   suggestedActions: SuggestedActionType[],
+  originalMessage?: string,
 ): AssistantActionResponse {
+  if (originalMessage) {
+    const intentMap: Record<SuggestedActionType, "create_note" | "create_list" | "create_reminder" | "cancel"> = {
+      save_note: "create_note",
+      save_reminder: "create_reminder",
+      create_list: "create_list",
+      ignore: "cancel",
+    };
+    const labelMap: Record<SuggestedActionType, string> = {
+      save_note: "Сохранить как заметку",
+      save_reminder: "Создать напоминание",
+      create_list: "Создать список",
+      ignore: "Не сохранять",
+    };
+    const possibleIntents = suggestedActions.map((action) => intentMap[action]);
+    const pendingAction = createPendingAssistantAction({
+      kind: "choose_intent",
+      originalMessage,
+      possibleIntents,
+      payload: {},
+    });
+    return createStructuredPendingResponse({
+      message,
+      pendingAction,
+      buttons: suggestedActions.map((action) => ({
+        label: labelMap[action],
+        pendingActionId: pendingAction.id,
+        selectedIntent: intentMap[action],
+        cancel: action === "ignore",
+      })),
+    });
+  }
+
   return {
     ...baseResponse("unknown_or_ambiguous", message),
     responseMode: "suggest_actions",
-    confidence: 0.72,
     suggestedActions,
     assistantContext: {
       intentType: "unknown_or_ambiguous",
@@ -837,46 +1103,37 @@ export async function executeKeywordCommand({
 export async function executeValidatedAssistantIntent({
   intent,
   userId,
+  originalMessage,
   folderId,
+  selectedItemId,
+  confirmed = false,
   folders: providedFolders,
   items: providedItems,
   persistence = databasePersistence,
 }: {
   intent: AssistantIntent;
   userId: number;
+  originalMessage?: string;
   folderId?: number | null;
+  selectedItemId?: number | null;
+  confirmed?: boolean;
   folders?: FolderRecord[];
   items?: ItemRecord[];
   persistence?: ActionPersistence;
 }): Promise<AssistantActionResponse> {
   if (intent.intent === "clarify") {
-    return failureResponse(
-      "unknown_or_ambiguous",
-      intent.data.question,
-      "clarification_required",
-    );
-  }
-
-  if (intent.confidence < 0.82) {
-    return failureResponse(
-      "unknown_or_ambiguous",
-      "Я не уверен, что правильно понял действие. Уточните, что именно нужно сделать.",
-      "low_confidence",
-    );
+    return createClarificationResponse(intent.data.question);
   }
 
   if (intent.intent === "chat_general") return chatResponse();
-
-  if (
-    intent.needsConfirmation ||
-    intent.intent === "delete_item" ||
-    intent.intent === "move_item_to_folder" ||
-    intent.intent === "rename_folder"
-  ) {
+  if (intent.intent === "answer_from_sources") {
+    return chatResponse("answer_from_sources");
+  }
+  if (intent.intent === "cancel") {
     return failureResponse(
       "unknown_or_ambiguous",
-      "Это действие может изменить или удалить существующие данные. Подтвердите его более точной командой.",
-      "confirmation_required",
+      "Действие отменено.",
+      "cancelled",
     );
   }
 
@@ -892,6 +1149,54 @@ export async function executeValidatedAssistantIntent({
   ): FolderRecord | null | undefined => {
     if (requestedName) return findFolder(folders, requestedName) ?? undefined;
     return explicitFolder ?? findSystemFolder(folders, systemNames);
+  };
+  const loadItems = async (): Promise<ItemRecord[]> =>
+    providedItems ??
+    (await db
+      .select()
+      .from(itemsTable)
+      .where(and(eq(itemsTable.userId, userId), eq(itemsTable.status, "active")))
+      .orderBy(desc(itemsTable.updatedAt))
+      .limit(1000));
+  const resolveMutationTarget = async (
+    query: string,
+    type?: AssistantItemType,
+    dateHint?: string | null,
+  ) => {
+    const items = await loadItems();
+    if (selectedItemId) {
+      const selected = items.find(
+        (item) => item.id === selectedItemId && (!type || item.type === type),
+      );
+      return { items, target: selected ?? null, candidates: [] as ActionTarget[] };
+    }
+    const candidates = findActionTargets({
+      items,
+      folders,
+      query,
+      type,
+      dateHint,
+    });
+    const hasClearLeader =
+      candidates.length === 1 ||
+      (candidates.length > 1 && candidates[0].score > candidates[1].score);
+    const target = hasClearLeader
+      ? items.find((item) => item.id === candidates[0].id) ?? null
+      : null;
+    return { items, target, candidates: target ? [] : candidates };
+  };
+  const targetSelectionResponse = (
+    intentType: AssistantActionIntent,
+    candidates: ActionTarget[],
+  ) => {
+    return failureResponse(
+      intentType,
+      `Нашёл несколько одинаково подходящих объектов: ${candidates
+        .slice(0, 4)
+        .map((candidate) => `«${candidate.title}»`)
+        .join(", ")}. Какой именно вы имеете в виду?`,
+      "ambiguous",
+    );
   };
 
   if (intent.intent === "create_note") {
@@ -1033,6 +1338,311 @@ export async function executeValidatedAssistantIntent({
         actionResult: { success: true, action: "create_reminder" },
       },
     };
+  }
+
+  if (intent.intent === "update_note") {
+    const { target, candidates } = await resolveMutationTarget(
+      intent.data.targetQuery,
+      "note",
+    );
+    if (candidates.length > 1) {
+      return targetSelectionResponse("update_note", candidates);
+    }
+    if (!target) {
+      return failureResponse(
+        "update_note",
+        `Я не нашёл заметку по запросу «${intent.data.targetQuery}».`,
+        "not_found",
+      );
+    }
+    const [updated] = await db
+      .update(itemsTable)
+      .set({
+        ...(intent.data.title ? { title: intent.data.title } : {}),
+        ...(intent.data.content ? { content: intent.data.content } : {}),
+      })
+      .where(
+        and(
+          eq(itemsTable.id, target.id),
+          eq(itemsTable.userId, userId),
+          eq(itemsTable.type, "note"),
+        ),
+      )
+      .returning();
+    if (!updated) {
+      return failureResponse("update_note", "Не удалось изменить заметку.", "not_found");
+    }
+    return baseResponse("update_note", `Заметка изменена: «${updated.title}».`);
+  }
+
+  if (intent.intent === "update_list") {
+    const { target, candidates } = await resolveMutationTarget(
+      intent.data.targetQuery,
+      "list",
+    );
+    if (candidates.length > 1) {
+      return targetSelectionResponse("update_list", candidates);
+    }
+    if (!target) {
+      return failureResponse(
+        "update_list",
+        `Я не нашёл список по запросу «${intent.data.targetQuery}».`,
+        "not_found",
+      );
+    }
+
+    const listItems = applyListItemUpdates(
+      parseStoredListItems(target.content),
+      intent.data,
+    );
+
+    const [updated] = await db
+      .update(itemsTable)
+      .set({
+        ...(intent.data.title ? { title: intent.data.title } : {}),
+        content: serializeStoredListItems(listItems),
+      })
+      .where(
+        and(
+          eq(itemsTable.id, target.id),
+          eq(itemsTable.userId, userId),
+          eq(itemsTable.type, "list"),
+        ),
+      )
+      .returning();
+    if (!updated) {
+      return failureResponse("update_list", "Не удалось изменить список.", "not_found");
+    }
+    return baseResponse("update_list", `Список изменён: «${updated.title}».`);
+  }
+
+  if (intent.intent === "update_reminder") {
+    const { target, candidates } = await resolveMutationTarget(
+      intent.data.targetQuery,
+      "reminder",
+      intent.data.date,
+    );
+    if (candidates.length > 1) {
+      return targetSelectionResponse("update_reminder", candidates);
+    }
+    if (!target) {
+      return failureResponse(
+        "update_reminder",
+        `Я не нашёл напоминание по запросу «${intent.data.targetQuery}».`,
+        "not_found",
+      );
+    }
+
+    let reminderAt = target.reminderAt;
+    if (intent.data.date || intent.data.time) {
+      const existingParts = target.reminderAt
+        ? new Intl.DateTimeFormat("en-CA", {
+            timeZone: "Europe/Moscow",
+            year: "numeric",
+            month: "2-digit",
+            day: "2-digit",
+            hour: "2-digit",
+            minute: "2-digit",
+            hour12: false,
+          }).formatToParts(target.reminderAt)
+        : [];
+      const pick = (type: Intl.DateTimeFormatPartTypes) =>
+        existingParts.find((part) => part.type === type)?.value ?? "";
+      const date =
+        intent.data.date ||
+        `${pick("year")}-${pick("month")}-${pick("day")}`;
+      const time =
+        intent.data.time ||
+        (pick("hour") && pick("minute")
+          ? `${pick("hour")}:${pick("minute")}`
+          : "09:00");
+      reminderAt = parseReminderDateTime(`${date}T${time}`);
+      if (!reminderAt || reminderAt.getTime() <= Date.now()) {
+        return failureResponse(
+          "update_reminder",
+          "Новая дата напоминания должна находиться в будущем.",
+          "invalid_date",
+        );
+      }
+    }
+
+    const [updated] = await db
+      .update(itemsTable)
+      .set({
+        ...(intent.data.title ? { title: intent.data.title } : {}),
+        ...(intent.data.content ? { content: intent.data.content } : {}),
+        reminderAt,
+      })
+      .where(
+        and(
+          eq(itemsTable.id, target.id),
+          eq(itemsTable.userId, userId),
+          eq(itemsTable.type, "reminder"),
+        ),
+      )
+      .returning();
+    if (!updated) {
+      return failureResponse(
+        "update_reminder",
+        "Не удалось изменить напоминание.",
+        "not_found",
+      );
+    }
+    const dateText = updated.reminderAt
+      ? ` на ${formatMoscowDateTime(updated.reminderAt)}`
+      : "";
+    return baseResponse(
+      "update_reminder",
+      `Напоминание изменено: «${updated.title}»${dateText}.`,
+    );
+  }
+
+  if (intent.intent === "move_item_to_folder") {
+    const folder = findFolder(folders, intent.data.folderName);
+    if (!folder) {
+      return failureResponse(
+        "move_item_to_folder",
+        `Я не нашёл папку «${intent.data.folderName}».`,
+        "folder_not_found",
+      );
+    }
+    const { target, candidates } = await resolveMutationTarget(
+      intent.data.itemQuery,
+      intent.data.itemType,
+    );
+    if (candidates.length > 1) {
+      return targetSelectionResponse("move_item_to_folder", candidates);
+    }
+    if (!target) {
+      return failureResponse(
+        "move_item_to_folder",
+        `Я не нашёл объект по запросу «${intent.data.itemQuery}».`,
+        "not_found",
+      );
+    }
+    const [updated] = await db
+      .update(itemsTable)
+      .set({ folderId: folder.id })
+      .where(and(eq(itemsTable.id, target.id), eq(itemsTable.userId, userId)))
+      .returning();
+    if (!updated) {
+      return failureResponse(
+        "move_item_to_folder",
+        "Не удалось переместить объект.",
+        "not_found",
+      );
+    }
+    return baseResponse(
+      "move_item_to_folder",
+      `«${itemTitle(updated)}» перемещён в папку «${folder.name}».`,
+    );
+  }
+
+  if (intent.intent === "delete_item") {
+    if (intent.data.itemType === "folder") {
+      const folder = findFolder(folders, intent.data.itemQuery);
+      if (!folder) {
+        return failureResponse(
+          "delete_folder",
+          `Я не нашёл папку «${intent.data.itemQuery}».`,
+          "not_found",
+        );
+      }
+      if (folder.isSystem) {
+        return failureResponse(
+          "delete_folder",
+          "Системную папку нельзя удалить.",
+          "system_folder",
+        );
+      }
+      await db.transaction(async (tx) => {
+        await tx
+          .update(itemsTable)
+          .set({ folderId: null })
+          .where(
+            and(
+              eq(itemsTable.folderId, folder.id),
+              eq(itemsTable.userId, userId),
+            ),
+          );
+        await tx
+          .delete(foldersTable)
+          .where(
+            and(
+              eq(foldersTable.id, folder.id),
+              eq(foldersTable.userId, userId),
+            ),
+          );
+      });
+      return baseResponse("delete_folder", `Папка удалена: «${folder.name}».`);
+    }
+
+    const itemType = intent.data.itemType;
+    const { target, candidates } = await resolveMutationTarget(
+      intent.data.itemQuery,
+      itemType,
+    );
+    if (candidates.length > 1) {
+      return targetSelectionResponse("unknown_or_ambiguous", candidates);
+    }
+    if (!target) {
+      return failureResponse(
+        "unknown_or_ambiguous",
+        `Я не нашёл объект по запросу «${intent.data.itemQuery}».`,
+        "not_found",
+      );
+    }
+    const [deleted] = await db
+      .delete(itemsTable)
+      .where(and(eq(itemsTable.id, target.id), eq(itemsTable.userId, userId)))
+      .returning();
+    if (!deleted) {
+      return failureResponse(
+        `delete_${target.type}` as AssistantActionIntent,
+        "Не удалось удалить объект.",
+        "not_found",
+      );
+    }
+    return baseResponse(
+      `delete_${target.type}` as AssistantActionIntent,
+      `Удалено: «${itemTitle(deleted)}».`,
+    );
+  }
+
+  if (intent.intent === "rename_folder") {
+    const folder = findFolder(folders, intent.data.folderName);
+    if (!folder) {
+      return failureResponse(
+        "rename_folder",
+        `Я не нашёл папку «${intent.data.folderName}».`,
+        "not_found",
+      );
+    }
+    if (folder.isSystem) {
+      return failureResponse(
+        "rename_folder",
+        "Системную папку нельзя переименовать.",
+        "system_folder",
+      );
+    }
+    const [updated] = await db
+      .update(foldersTable)
+      .set({ name: intent.data.newName })
+      .where(
+        and(eq(foldersTable.id, folder.id), eq(foldersTable.userId, userId)),
+      )
+      .returning();
+    if (!updated) {
+      return failureResponse(
+        "rename_folder",
+        "Не удалось переименовать папку.",
+        "not_found",
+      );
+    }
+    return baseResponse(
+      "rename_folder",
+      `Папка переименована в «${updated.name}».`,
+    );
   }
 
   if (intent.intent === "create_folder") {
@@ -1221,19 +1831,42 @@ export async function classifyAndExecuteAssistantAction({
     const folder = findFolder(folders, target);
     if (!folder) return failureResponse("delete_folder", `Я не нашел папку${target ? ` «${target}»` : ""}.`, "not_found");
     if (folder.isSystem) return failureResponse("delete_folder", "Системные папки нельзя удалять.", "system_folder");
-    return withPending(
-      "delete_folder",
-      `Удалить папку «${folder.name}»? Материалы из неё останутся без папки. Ответьте «да», чтобы подтвердить.`,
-      { action: "delete_folder", folderId: folder.id, title: folder.name },
-    );
+    await db.transaction(async (tx) => {
+      await tx
+        .update(itemsTable)
+        .set({ folderId: null })
+        .where(
+          and(
+            eq(itemsTable.folderId, folder.id),
+            eq(itemsTable.userId, userId),
+          ),
+        );
+      await tx
+        .delete(foldersTable)
+        .where(
+          and(
+            eq(foldersTable.id, folder.id),
+            eq(foldersTable.userId, userId),
+          ),
+        );
+    });
+    return baseResponse("delete_folder", `Папка удалена: «${folder.name}».`);
   }
 
   if (looksLikeReminderCandidate(content)) {
-    return withSuggestedActions("Похоже, это напоминание. Создать?", ["save_reminder", "save_note", "ignore"]);
+    return withSuggestedActions(
+      "Что сделать с этим сообщением?",
+      ["save_reminder", "save_note", "ignore"],
+      content,
+    );
   }
 
   if (looksLikeListCandidate(content)) {
-    return withSuggestedActions("Похоже, это список. Создать?", ["create_list", "save_note", "ignore"]);
+    return withSuggestedActions(
+      "Что сделать с этим сообщением?",
+      ["create_list", "save_note", "ignore"],
+      content,
+    );
   }
 
   if (LEGACY_AUTO_SAVE_ENABLED && CREATE_NOTE_RE.test(normalized)) {
@@ -1332,10 +1965,20 @@ export async function classifyAndExecuteAssistantAction({
     if (matches.length === 0) return failureResponse(`delete_${type}` as AssistantActionIntent, `Я не нашел ${type === "note" ? "заметку" : type === "file" ? "файл" : type === "list" ? "список" : "напоминание"}${target ? ` «${target}»` : ""}.`, "not_found");
     if (matches.length > 1) return failureResponse(`delete_${type}` as AssistantActionIntent, listItemsMessage("Нашел несколько объектов, уточните какой удалить", matches, folders), "ambiguous");
     const item = matches[0];
-    return withPending(
+    const [deleted] = await db
+      .delete(itemsTable)
+      .where(and(eq(itemsTable.id, item.id), eq(itemsTable.userId, userId)))
+      .returning();
+    if (!deleted) {
+      return failureResponse(
+        `delete_${type}` as AssistantActionIntent,
+        "Не удалось удалить объект.",
+        "not_found",
+      );
+    }
+    return baseResponse(
       `delete_${type}` as AssistantActionIntent,
-      `Удалить ${type === "note" ? "заметку" : type === "file" ? "файл" : type === "list" ? "список" : "напоминание"} «${itemTitle(item)}»? Ответьте «да», чтобы подтвердить.`,
-      { action: "delete_item", itemId: item.id, itemType: type, title: itemTitle(item) },
+      `Удалено: «${itemTitle(deleted)}».`,
     );
   }
 

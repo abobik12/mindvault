@@ -1,0 +1,93 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" width="1400" height="980" viewBox="0 0 1400 980">
+  <defs>
+    <marker id="arrow" viewBox="0 0 12 12" refX="10" refY="6" markerWidth="10" markerHeight="10" orient="auto-start-reverse">
+      <path d="M 0 0 L 12 6 L 0 12 z" fill="#374151"/>
+    </marker>
+    <style>
+      .bg { fill: #ffffff; }
+      .title { font: 700 30px Arial, sans-serif; fill: #111827; }
+      .subtitle { font: 400 18px Arial, sans-serif; fill: #4b5563; }
+      .box { fill: #f8fafc; stroke: #374151; stroke-width: 2; rx: 12; }
+      .box2 { fill: #eef6ff; stroke: #374151; stroke-width: 2; rx: 12; }
+      .box3 { fill: #f5f7eb; stroke: #374151; stroke-width: 2; rx: 12; }
+      .box4 { fill: #fff7ed; stroke: #374151; stroke-width: 2; rx: 12; }
+      .label { font: 700 20px Arial, sans-serif; fill: #111827; }
+      .text { font: 400 17px Arial, sans-serif; fill: #1f2937; }
+      .small { font: 400 15px Arial, sans-serif; fill: #374151; }
+      .tiny { font: 400 14px Arial, sans-serif; fill: #4b5563; }
+      .arrow { stroke: #374151; stroke-width: 2.2; fill: none; marker-end: url(#arrow); }
+      .line { stroke: #6b7280; stroke-width: 1.8; fill: none; }
+      .note { fill: #ffffff; stroke: #9ca3af; stroke-width: 1.5; rx: 10; }
+    </style>
+  </defs>
+  <rect class="bg" x="0" y="0" width="1400" height="980"/>
+<text x="44" y="50" class="title"><tspan x="44" dy="0">Схема обработки пользовательского сообщения</tspan></text><text x="44" y="82" class="subtitle"><tspan x="44" dy="0">Сообщение проходит через frontend, backend, action-логику, контекст и AI fallback</tspan></text>
+  <rect class="box" x="70" y="130" width="320" height="120" rx="12"/>
+  <circle cx="100" cy="162" r="18" fill="#ffffff" stroke="#374151" stroke-width="2"/>
+  <text x="100" y="169" text-anchor="middle" class="label">1</text>
+  <text x="128" y="162" class="label"><tspan x="128" dy="0">Ввод сообщения</tspan></text>
+  <text x="90" y="194" class="text"><tspan x="90" dy="0">пользователь пишет</tspan><tspan x="90" dy="20">сообщение в чате</tspan></text>
+  <rect class="box2" x="520" y="130" width="330" height="120" rx="12"/>
+  <circle cx="550" cy="162" r="18" fill="#ffffff" stroke="#374151" stroke-width="2"/>
+  <text x="550" y="169" text-anchor="middle" class="label">2</text>
+  <text x="578" y="162" class="label"><tspan x="578" dy="0">Frontend</tspan></text>
+  <text x="540" y="194" class="text"><tspan x="540" dy="0">POST в backend</tspan><tspan x="540" dy="20">conversation messages</tspan></text>
+  <rect class="box3" x="960" y="130" width="330" height="120" rx="12"/>
+  <circle cx="990" cy="162" r="18" fill="#ffffff" stroke="#374151" stroke-width="2"/>
+  <text x="990" y="169" text-anchor="middle" class="label">3</text>
+  <text x="1018" y="162" class="label"><tspan x="1018" dy="0">Backend</tspan></text>
+  <text x="980" y="194" class="text"><tspan x="980" dy="0">сохранение сообщения</tspan><tspan x="980" dy="20">в таблице messages</tspan></text>
+  <rect class="box3" x="960" y="330" width="330" height="130" rx="12"/>
+  <circle cx="990" cy="362" r="18" fill="#ffffff" stroke="#374151" stroke-width="2"/>
+  <text x="990" y="369" text-anchor="middle" class="label">4</text>
+  <text x="1018" y="362" class="label"><tspan x="1018" dy="0">Action-логика</tspan></text>
+  <text x="980" y="394" class="text"><tspan x="980" dy="0">проверка явных команд</tspan><tspan x="980" dy="20">и pending confirmations</tspan></text>
+  <rect class="box4" x="70" y="330" width="330" height="130" rx="12"/>
+  <circle cx="100" cy="362" r="18" fill="#ffffff" stroke="#374151" stroke-width="2"/>
+  <text x="100" y="369" text-anchor="middle" class="label">5</text>
+  <text x="128" y="362" class="label"><tspan x="128" dy="0">Команда понятна</tspan></text>
+  <text x="90" y="394" class="text"><tspan x="90" dy="0">создание/изменение</tspan><tspan x="90" dy="20">объекта в БД</tspan></text>
+  <rect class="box" x="520" y="330" width="330" height="130" rx="12"/>
+  <circle cx="550" cy="362" r="18" fill="#ffffff" stroke="#374151" stroke-width="2"/>
+  <text x="550" y="369" text-anchor="middle" class="label">6</text>
+  <text x="578" y="362" class="label"><tspan x="578" dy="0">Сообщение неясное</tspan></text>
+  <text x="540" y="394" class="text"><tspan x="540" dy="0">возврат suggested actions</tspan><tspan x="540" dy="20">без автосоздания</tspan></text>
+  <rect class="box2" x="520" y="560" width="330" height="130" rx="12"/>
+  <circle cx="550" cy="592" r="18" fill="#ffffff" stroke="#374151" stroke-width="2"/>
+  <text x="550" y="599" text-anchor="middle" class="label">7</text>
+  <text x="578" y="592" class="label"><tspan x="578" dy="0">Обычный вопрос</tspan></text>
+  <text x="540" y="624" class="text"><tspan x="540" dy="0">формирование контекста</tspan><tspan x="540" dy="20">по данным пользователя</tspan></text>
+  <rect class="box4" x="960" y="560" width="330" height="130" rx="12"/>
+  <circle cx="990" cy="592" r="18" fill="#ffffff" stroke="#374151" stroke-width="2"/>
+  <text x="990" y="599" text-anchor="middle" class="label">8</text>
+  <text x="1018" y="592" class="label"><tspan x="1018" dy="0">AI API</tspan></text>
+  <text x="980" y="624" class="text"><tspan x="980" dy="0">OpenAI / OpenRouter</tspan><tspan x="980" dy="20">или ошибка провайдера</tspan></text>
+  <rect class="box3" x="520" y="770" width="330" height="120" rx="12"/>
+  <circle cx="550" cy="802" r="18" fill="#ffffff" stroke="#374151" stroke-width="2"/>
+  <text x="550" y="809" text-anchor="middle" class="label">9</text>
+  <text x="578" y="802" class="label"><tspan x="578" dy="0">Ответ ассистента</tspan></text>
+  <text x="540" y="834" class="text"><tspan x="540" dy="0">сохранение в messages</tspan><tspan x="540" dy="20">возврат пользователю</tspan></text>
+  <rect class="box" x="70" y="770" width="330" height="120" rx="12"/>
+  <circle cx="100" cy="802" r="18" fill="#ffffff" stroke="#374151" stroke-width="2"/>
+  <text x="100" y="809" text-anchor="middle" class="label">10</text>
+  <text x="128" y="802" class="label"><tspan x="128" dy="0">Fallback</tspan></text>
+  <text x="90" y="834" class="text"><tspan x="90" dy="0">если AI недоступен</tspan><tspan x="90" dy="20">ответ без внешней модели</tspan></text>
+  <line class="arrow" x1="390" y1="190" x2="520" y2="190"/>
+  
+  <line class="arrow" x1="850" y1="190" x2="960" y2="190"/>
+  
+  <line class="arrow" x1="1125" y1="250" x2="1125" y2="330"/>
+  
+  <line class="arrow" x1="960" y1="395" x2="400" y2="395"/>
+  <rect class="note" x="588" y="369" width="184" height="28"/><text x="680" y="389" text-anchor="middle" class="tiny">явная команда</text>
+  <line class="arrow" x1="960" y1="425" x2="850" y2="425"/>
+  <rect class="note" x="813" y="399" width="184" height="28"/><text x="905" y="419" text-anchor="middle" class="tiny">неоднозначно</text>
+  <polyline class="arrow" points="1125,460 1125,520 685,520 685,560"/>
+  <rect class="note" x="805" y="490" width="190" height="28"/><text x="900" y="510" text-anchor="middle" class="tiny">обычный вопрос</text>
+  <line class="arrow" x1="850" y1="625" x2="960" y2="625"/>
+  <rect class="note" x="813" y="599" width="184" height="28"/><text x="905" y="619" text-anchor="middle" class="tiny">prompt</text>
+  <polyline class="arrow" points="1125,690 1125,740 685,740 685,770"/>
+  <rect class="note" x="805" y="710" width="190" height="28"/><text x="900" y="730" text-anchor="middle" class="tiny">ответ</text>
+  <polyline class="arrow" points="960,640 410,640 410,830"/>
+  <rect class="note" x="515" y="610" width="190" height="28"/><text x="610" y="630" text-anchor="middle" class="tiny">ошибка AI</text></svg>
